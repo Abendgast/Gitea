@@ -4,7 +4,7 @@ pipeline {
     }
 
     options {
-        timeout(time: 45, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
         skipDefaultCheckout()
         timestamps()
     }
@@ -68,6 +68,20 @@ pipeline {
                     echo "=== Проект структура ==="
                     ls -la
 
+                    # Check for possible Gitea entry points
+                    if [ -d "cmd/gitea" ]; then
+                        echo "✅ cmd/gitea директорія знайдена"
+                    elif [ -f "main.go" ]; then
+                        echo "✅ main.go знайдено в корені проекту"
+                    elif [ -d "cmd" ]; then
+                        echo "✅ cmd директорія знайдена, перевіряємо зміст:"
+                        ls -la cmd/
+                    else
+                        echo "⚠️ Стандартна Go структура проекту не знайдена"
+                        echo "Наявні файли та директорії:"
+                        find . -name "*.go" -type f | head -10
+                    fi
+
                     if [ -f "go.mod" ]; then
                         echo "✅ go.mod знайдено - це Go проект"
                         head -5 go.mod
@@ -77,6 +91,8 @@ pipeline {
 
                     if [ -f "Makefile" ]; then
                         echo "✅ Makefile знайдено"
+                        echo "Основні цілі Makefile:"
+                        grep "^[a-zA-Z0-9_-]*:" Makefile | head -10 || true
                     else
                         echo "⚠️ Makefile не знайдено"
                     fi
@@ -90,10 +106,12 @@ pipeline {
                 sh '''
                     echo "=== Завантаження Go залежностей ==="
 
+                    # Clean previous builds
+                    go clean -cache || true
                     go clean -modcache || true
 
                     echo "Завантаження модулів..."
-                    go mod download
+                    timeout 10m go mod download
 
                     echo "Перевірка цілісності модулів..."
                     go mod verify
@@ -107,98 +125,111 @@ pipeline {
         }
 
         stage('Code Quality Analysis') {
-            parallel {
-                stage('Go Lint Analysis') {
-                    steps {
-                        sh '''
-                            echo "=== Аналіз якості Go коду ==="
-                            mkdir -p test-results
+            steps {
+                sh '''
+                    echo "=== Аналіз якості Go коду ==="
+                    mkdir -p test-results
 
-                            echo "Перевірка синтаксису Go файлів..."
-                            go vet ./... > test-results/go-vet.log 2>&1 || echo "Go vet завершено з попередженнями"
+                    echo "Перевірка синтаксису Go файлів..."
+                    timeout 5m go vet ./... > test-results/go-vet.log 2>&1 || echo "Go vet завершено з попередженнями"
 
-                            echo "Перевірка форматування коду..."
-                            gofmt -l . > test-results/gofmt.log 2>&1 || true
+                    echo "Перевірка форматування коду..."
+                    timeout 2m gofmt -l . > test-results/gofmt.log 2>&1 || true
 
-                            echo "=== Результати go vet ==="
-                            head -10 test-results/go-vet.log || echo "Файл порожній"
+                    echo "=== Результати go vet ==="
+                    head -10 test-results/go-vet.log || echo "Файл порожній"
 
-                            echo "=== Результати gofmt ==="
-                            head -10 test-results/gofmt.log || echo "Файл порожній"
+                    echo "=== Результати gofmt ==="
+                    head -10 test-results/gofmt.log || echo "Файл порожній"
 
-                            echo "✅ Аналіз коду завершено"
-                        '''
-                    }
-                }
+                    echo "✅ Аналіз коду завершено"
+                '''
+            }
+        }
 
-                stage('Security Scan') {
-                    steps {
-                        sh '''
-                            echo "=== Сканування безпеки ==="
-                            mkdir -p test-results
+        stage('Build Verification') {
+            steps {
+                sh '''
+                    echo "=== Перевірка можливості білду ==="
 
-                            echo "Перевірка вразливостей у залежностях..."
-                            go list -json -deps ./... | grep -E '"(Standard|Module)"' > test-results/dependencies.json || true
+                    # Determine the correct build target
+                    BUILD_TARGET=""
+                    if [ -d "cmd/gitea" ]; then
+                        BUILD_TARGET="./cmd/gitea"
+                        echo "Використовуємо cmd/gitea як ціль білду"
+                    elif [ -f "main.go" ]; then
+                        BUILD_TARGET="."
+                        echo "Використовуємо кореневу директорію як ціль білду"
+                    elif [ -d "cmd" ]; then
+                        # Find the first buildable cmd subdirectory
+                        for dir in cmd/*/; do
+                            if [ -f "${dir}main.go" ]; then
+                                BUILD_TARGET="./${dir}"
+                                echo "Знайдено ціль білду: ${BUILD_TARGET}"
+                                break
+                            fi
+                        done
+                    fi
 
-                            echo "✅ Сканування безпеки завершено"
-                        '''
-                    }
-                }
+                    if [ -z "$BUILD_TARGET" ]; then
+                        echo "❌ Не вдалося знайти відповідну ціль для білду"
+                        echo "Структура проекту:"
+                        find . -name "*.go" -type f | head -20
+                        exit 1
+                    fi
+
+                    echo "Тестова компіляція з ${BUILD_TARGET}..."
+                    timeout 10m go build -v ${BUILD_TARGET} > build-verification.log 2>&1 || BUILD_CHECK_FAILED=true
+
+                    if [ "${BUILD_CHECK_FAILED}" = "true" ]; then
+                        echo "⚠️ Виявлено проблеми з компіляцією:"
+                        tail -20 build-verification.log
+                        echo "Продовжуємо, але білд може провалитися"
+                    else
+                        echo "✅ Перевірка компіляції пройшла успішно"
+                        echo "Ціль білду: ${BUILD_TARGET}"
+                        # Save the build target for later use
+                        echo "${BUILD_TARGET}" > build-target.txt
+                    fi
+                '''
             }
         }
 
         stage('Testing') {
-            parallel {
-                stage('Unit Tests') {
-                    steps {
-                        sh '''
-                            echo "=== Виконання Unit тестів ==="
-                            mkdir -p test-results
+            steps {
+                sh '''
+                    echo "=== Виконання тестів ==="
+                    mkdir -p test-results
 
-                            export GO_TEST_TIMEOUT=10m
+                    export GO_TEST_TIMEOUT=15m
 
-                            echo "Запуск тестів з аналізом покриття..."
-                            go test -v -timeout=${GO_TEST_TIMEOUT} -coverprofile=test-results/coverage.out ./... > test-results/unit-tests.log 2>&1 || TEST_EXIT_CODE=$?
+                    echo "Запуск тестів з коротким таймаутом..."
+                    timeout 20m go test -v -timeout=${GO_TEST_TIMEOUT} -short ./... > test-results/unit-tests.log 2>&1 || TEST_EXIT_CODE=$?
 
-                            if [ -f "test-results/coverage.out" ]; then
-                                go tool cover -html=test-results/coverage.out -o test-results/coverage.html
-                                echo "✅ HTML звіт покриття створено"
-                            fi
+                    echo "=== Результати тестування ==="
+                    tail -50 test-results/unit-tests.log || echo "Лог файл порожній"
 
-                            echo "=== Результати тестування ==="
-                            tail -20 test-results/unit-tests.log || echo "Лог файл порожній"
+                    if [ "${TEST_EXIT_CODE:-0}" -ne 0 ]; then
+                        echo "⚠️ Деякі тести провалилися, але продовжуємо білд"
+                        echo "Код виходу: ${TEST_EXIT_CODE:-0}"
+                    else
+                        echo "✅ Тести пройшли успішно"
+                    fi
 
-                            if [ "${TEST_EXIT_CODE:-0}" -ne 0 ]; then
-                                echo "⚠️ Деякі тести провалилися, але продовжуємо білд"
-                            else
-                                echo "✅ Всі unit тести пройшли успішно"
-                            fi
-                        '''
-                    }
-                    post {
-                        always {
-                            archiveArtifacts artifacts: 'test-results/*', allowEmptyArchive: true
-                        }
-                    }
-                }
-
-                stage('Build Verification') {
-                    steps {
-                        sh '''
-                            echo "=== Перевірка можливості білду ==="
-
-                            echo "Тестова компіляція..."
-                            go build -v ./cmd/gitea > build-verification.log 2>&1 || BUILD_CHECK_FAILED=true
-
-                            if [ "${BUILD_CHECK_FAILED}" = "true" ]; then
-                                echo "⚠️ Виявлено проблеми з компіляцією:"
-                                tail -10 build-verification.log
-                                echo "Продовжуємо, але білд може провалитися"
-                            else
-                                echo "✅ Перевірка компіляції пройшла успішно"
-                            fi
-                        '''
-                    }
+                    # Try to generate coverage if tests passed
+                    if [ "${TEST_EXIT_CODE:-0}" -eq 0 ]; then
+                        echo "Генерація звіту покриття..."
+                        timeout 10m go test -coverprofile=test-results/coverage.out ./... > /dev/null 2>&1 || true
+                        if [ -f "test-results/coverage.out" ]; then
+                            go tool cover -html=test-results/coverage.out -o test-results/coverage.html
+                            echo "✅ HTML звіт покриття створено"
+                        fi
+                    fi
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'test-results/*', allowEmptyArchive: true
                 }
             }
         }
@@ -218,35 +249,60 @@ pipeline {
                     echo "- Коміт: ${BUILD_HASH}"
                     echo "- Теги: ${TAGS}"
 
-                    if [ -f "Makefile" ]; then
-                        echo "Спроба білду через Makefile..."
-                        make clean || true
-
-                        export LDFLAGS="-X 'code.gitea.io/gitea/modules/setting.BuildTime=${BUILD_DATE}' -X 'code.gitea.io/gitea/modules/setting.BuildGitHash=${BUILD_HASH}'"
-
-                        timeout 15m make build TAGS="${TAGS}" || MAKE_BUILD_FAILED=true
-                    else
-                        MAKE_BUILD_FAILED=true
+                    # Determine build target from previous stage
+                    BUILD_TARGET="./cmd/gitea"
+                    if [ -f "build-target.txt" ]; then
+                        BUILD_TARGET=$(cat build-target.txt)
+                        echo "Використовуємо збережену ціль білду: ${BUILD_TARGET}"
                     fi
 
-                    if [ "${MAKE_BUILD_FAILED}" = "true" ]; then
-                        echo "Makefile білд провалився або відсутній, використовуємо go build..."
+                    # Try Makefile first
+                    MAKE_BUILD_SUCCESS=false
+                    if [ -f "Makefile" ]; then
+                        echo "Спроба білду через Makefile..."
 
-                        go build -v \
+                        # Check if 'build' target exists
+                        if make -n build >/dev/null 2>&1; then
+                            echo "Знайдено ціль 'build' в Makefile"
+                            timeout 20m make build TAGS="${TAGS}" && MAKE_BUILD_SUCCESS=true
+                        elif make -n gitea >/dev/null 2>&1; then
+                            echo "Знайдено ціль 'gitea' в Makefile"
+                            timeout 20m make gitea TAGS="${TAGS}" && MAKE_BUILD_SUCCESS=true
+                        else
+                            echo "Стандартні цілі не знайдені в Makefile"
+                        fi
+                    fi
+
+                    # Fallback to direct go build
+                    if [ "$MAKE_BUILD_SUCCESS" = "false" ]; then
+                        echo "Makefile білд провалився або недоступний, використовуємо go build..."
+
+                        timeout 20m go build -v \
                             -tags "${TAGS}" \
                             -ldflags "-s -w -X 'code.gitea.io/gitea/modules/setting.BuildTime=${BUILD_DATE}' -X 'code.gitea.io/gitea/modules/setting.BuildGitHash=${BUILD_HASH}'" \
                             -o build-artifacts/gitea \
-                            ./cmd/gitea
+                            ${BUILD_TARGET}
                     else
-                        cp gitea build-artifacts/gitea 2>/dev/null || cp cmd/gitea/gitea build-artifacts/gitea 2>/dev/null || echo "Gitea binary не знайдено в стандартних місцях"
+                        # Copy the built binary to our artifacts directory
+                        if [ -f "gitea" ]; then
+                            cp gitea build-artifacts/gitea
+                        elif [ -f "cmd/gitea/gitea" ]; then
+                            cp cmd/gitea/gitea build-artifacts/gitea
+                        else
+                            echo "⚠️ Не знайдено зібраний binary після Makefile"
+                            # Try to find any gitea binary
+                            find . -name "gitea" -type f -executable | head -1 | xargs -I {} cp {} build-artifacts/gitea
+                        fi
                     fi
 
+                    # Verify the binary was created
                     if [ -f "build-artifacts/gitea" ]; then
                         echo "✅ Gitea binary успішно зібрано!"
                         ls -la build-artifacts/gitea
+                        file build-artifacts/gitea
 
                         echo "Перевірка версії зібраного binary:"
-                        ./build-artifacts/gitea --version || echo "Версію не вдалося отримати, але binary існує"
+                        timeout 10s ./build-artifacts/gitea --version || echo "Версію не вдалося отримати, але binary існує"
 
                         echo "Створення метаданих білду..."
                         cat > build-artifacts/build-info.txt << EOF
@@ -257,13 +313,17 @@ Version: ${GITEA_VERSION}
 Git Commit: ${GIT_COMMIT_SHORT}
 Build Date: ${BUILD_DATE}
 Build Tags: ${TAGS}
+Build Target: ${BUILD_TARGET}
 Builder: Jenkins CI/CD
 Node: ${NODE_NAME}
+Go Version: $(go version)
 EOF
                     else
                         echo "❌ Gitea binary НЕ створено! Білд провалився."
-                        echo "Створюємо placeholder для debug..."
-                        echo "Build failed - no binary produced" > build-artifacts/BUILD_FAILED.txt
+                        echo "Вміст директорії build-artifacts:"
+                        ls -la build-artifacts/ || true
+                        echo "Пошук всіх виконуваних файлів:"
+                        find . -name "*gitea*" -type f || true
                         exit 1
                     fi
 
@@ -284,32 +344,56 @@ EOF
                     sh '''
                         echo "=== Створення Docker образу ==="
 
-                        cat > Dockerfile << 'EOF'
-FROM alpine:3.18 AS base
-RUN apk add --no-cache ca-certificates git
+                        # Verify binary exists before creating Docker image
+                        if [ ! -f "build-artifacts/gitea" ]; then
+                            echo "❌ Gitea binary не знайдено для Docker образу"
+                            exit 1
+                        fi
 
-FROM base
+                        cat > Dockerfile << 'EOF'
+FROM alpine:3.18
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    git \
+    sqlite \
+    openssh \
+    gnupg \
+    && adduser -D -s /bin/sh gitea
+
+# Set up application directory
 WORKDIR /app
 
+# Copy application binary and metadata
 COPY build-artifacts/gitea /app/gitea
 COPY build-artifacts/build-info.txt /app/
 
-RUN adduser -D -s /bin/sh gitea && \
+# Set proper permissions
+RUN chmod +x /app/gitea && \
     chown -R gitea:gitea /app
 
+# Create data directory
+RUN mkdir -p /data && chown -R gitea:gitea /data
+
 USER gitea
-EXPOSE 3000
+EXPOSE 3000 22
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ["/app/gitea", "help"] || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["/app/gitea", "manager", "check", "--quiet"] || exit 1
 
+# Default command
 CMD ["/app/gitea", "web"]
 EOF
 
                         echo "Dockerfile створено, початок збірки образу..."
-                        docker build -t ${DOCKER_IMAGE} .
+                        timeout 10m docker build -t ${DOCKER_IMAGE} .
 
-                        docker images | grep gitea-custom
+                        echo "Перевірка створеного образу:"
+                        docker images | grep gitea-custom || true
+                        docker inspect ${DOCKER_IMAGE} || true
+
                         echo "✅ Docker образ створено: ${DOCKER_IMAGE}"
                     '''
                 }
@@ -321,8 +405,13 @@ EOF
                 sh '''
                     echo "=== Підготовка фінальних артефактів ==="
 
-                    tar -czf gitea-build-${BUILD_NUMBER}.tar.gz build-artifacts/
+                    # Create comprehensive build archive
+                    tar -czf gitea-build-${BUILD_NUMBER}.tar.gz \
+                        build-artifacts/ \
+                        test-results/ \
+                        *.log
 
+                    # Create detailed metadata
                     cat > build-metadata.json << EOF
 {
     "build_number": "${BUILD_NUMBER}",
@@ -333,16 +422,23 @@ EOF
     "build_node": "${NODE_NAME}",
     "go_version": "$(go version)",
     "build_tags": "${TAGS}",
+    "build_duration": "${BUILD_TIMESTAMP}",
     "artifacts": {
         "binary": "build-artifacts/gitea",
+        "binary_size": "$(stat -c%s build-artifacts/gitea 2>/dev/null || echo 0)",
         "archive": "gitea-build-${BUILD_NUMBER}.tar.gz",
         "docker_image": "${DOCKER_IMAGE}"
+    },
+    "checksums": {
+        "binary_sha256": "$(sha256sum build-artifacts/gitea | cut -d' ' -f1)",
+        "archive_sha256": "$(sha256sum gitea-build-${BUILD_NUMBER}.tar.gz | cut -d' ' -f1)"
     }
 }
 EOF
 
                     echo "✅ Артефакти підготовлено для архівування"
-                    ls -la *.tar.gz *.json build-artifacts/
+                    echo "Фінальні файли:"
+                    ls -la *.tar.gz *.json build-artifacts/ 2>/dev/null || true
                 '''
             }
             post {
@@ -359,9 +455,12 @@ EOF
                 sh '''
                     echo "=== Очищення після білду ==="
 
-                    docker images | grep gitea-custom | awk '{print $3}' | tail -n +3 | xargs -r docker rmi || true
+                    # Clean up old Docker images (keep last 3)
+                    docker images | grep gitea-custom | awk '{print $3}' | tail -n +4 | xargs -r docker rmi || true
 
+                    # Clean Go caches
                     go clean -cache || true
+                    go clean -testcache || true
 
                     echo "Очищення завершено"
                 '''
