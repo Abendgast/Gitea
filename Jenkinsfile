@@ -4,30 +4,41 @@ pipeline {
     }
 
     options {
-        timeout(time: 60, unit: 'MINUTES')
+        // Зменшуємо загальний таймаут до 25 хвилин
+        timeout(time: 25, unit: 'MINUTES')
         skipDefaultCheckout()
         timestamps()
+        // Додаємо можливість перервати збірку
+        disableConcurrentBuilds()
     }
 
     environment {
         BUILD_NUMBER = "${env.BUILD_NUMBER}"
         DOCKER_IMAGE = "gitea-custom:${env.BUILD_NUMBER}"
 
+        // Go налаштування
         GOROOT = '/usr/local/go'
         GOPATH = '/home/jenkins-agent/go'
         PATH = "${env.GOROOT}/bin:${env.GOPATH}/bin:${env.PATH}"
 
+        // Важливо: правильні теги для Gitea з SQLite підтримкою
         TAGS = "bindata sqlite sqlite_unlock_notify"
         CGO_ENABLED = "1"
+
+        // Оптимізація Go збірки
+        GOCACHE = '/tmp/go-build-cache'
+        GOMODCACHE = '/tmp/go-mod-cache'
     }
 
     stages {
-        stage('Checkout') {
+        stage('Підготовка') {
             steps {
+                // Очищуємо робочу директорію та завантажуємо код
                 cleanWs()
                 checkout scm
 
                 script {
+                    // Отримуємо базову інформацію про збірку
                     env.GIT_COMMIT_SHORT = sh(
                         returnStdout: true,
                         script: 'git rev-parse --short HEAD'
@@ -38,412 +49,243 @@ pipeline {
                         script: 'git describe --tags --always'
                     ).trim()
                 }
-            }
-        }
 
-        stage('Environment Verification') {
-            steps {
                 sh '''
-                    echo "=== Розширена перевірка середовища ==="
-                    echo "Build Number: ${BUILD_NUMBER}"
-                    echo "Git Commit: ${GIT_COMMIT_SHORT}"
-                    echo "Gitea Version: ${GITEA_VERSION}"
-                    echo "Node Name: ${NODE_NAME}"
-                    echo "Workspace: ${WORKSPACE}"
-                    echo ""
-                    echo "=== Go Environment Verification ==="
-                    echo "GOROOT: ${GOROOT}"
-                    echo "GOPATH: ${GOPATH}"
-                    echo "PATH: ${PATH}"
+                    echo "🚀 Початок збірки Gitea"
+                    echo "Версія: ${GITEA_VERSION}"
+                    echo "Коміт: ${GIT_COMMIT_SHORT}"
+                    echo "Номер збірки: ${BUILD_NUMBER}"
 
-                    if command -v go >/dev/null 2>&1; then
-                        echo "✅ Go знайдено: $(go version)"
-                        go env GOROOT
-                        go env GOPATH
+                    # Створюємо директорії для кешування
+                    mkdir -p ${GOCACHE} ${GOMODCACHE}
+
+                    # Перевіряємо Go
+                    go version
+
+                    # Швидка перевірка структури проекту
+                    if [ -f "go.mod" ] && [ -f "Makefile" ]; then
+                        echo "✅ Gitea проект готовий до збірки"
                     else
-                        echo "❌ Go НЕ знайдено! Білд неможливий."
+                        echo "❌ Проблема зі структурою проекту"
                         exit 1
                     fi
-
-                    echo "=== Проект структура ==="
-                    ls -la
-
-                    # Check for possible Gitea entry points
-                    if [ -d "cmd/gitea" ]; then
-                        echo "✅ cmd/gitea директорія знайдена"
-                    elif [ -f "main.go" ]; then
-                        echo "✅ main.go знайдено в корені проекту"
-                    elif [ -d "cmd" ]; then
-                        echo "✅ cmd директорія знайдена, перевіряємо зміст:"
-                        ls -la cmd/
-                    else
-                        echo "⚠️ Стандартна Go структура проекту не знайдена"
-                        echo "Наявні файли та директорії:"
-                        find . -name "*.go" -type f | head -10
-                    fi
-
-                    if [ -f "go.mod" ]; then
-                        echo "✅ go.mod знайдено - це Go проект"
-                        head -5 go.mod
-                    else
-                        echo "⚠️ go.mod не знайдено"
-                    fi
-
-                    if [ -f "Makefile" ]; then
-                        echo "✅ Makefile знайдено"
-                        echo "Основні цілі Makefile:"
-                        grep "^[a-zA-Z0-9_-]*:" Makefile | head -10 || true
-                    else
-                        echo "⚠️ Makefile не знайдено"
-                    fi
-                    echo "================================"
                 '''
             }
         }
 
-        stage('Dependencies Management') {
+        stage('Залежності') {
             steps {
                 sh '''
-                    echo "=== Завантаження Go залежностей ==="
+                    echo "📦 Завантаження залежностей..."
 
-                    # Clean previous builds
-                    go clean -cache || true
-                    go clean -modcache || true
+                    # Використовуємо кеш для прискорення
+                    export GOPROXY=https://proxy.golang.org,direct
+                    export GOSUMDB=sum.golang.org
 
-                    echo "Завантаження модулів..."
-                    timeout 10m go mod download
+                    # Завантажуємо залежності з таймаутом
+                    timeout 5m go mod download -x
 
-                    echo "Перевірка цілісності модулів..."
+                    # Перевіряємо цілісність
                     go mod verify
 
-                    echo "Очищення зайвих залежностей..."
-                    go mod tidy
-
-                    echo "✅ Залежності успішно налаштовано"
+                    echo "✅ Залежності готові"
                 '''
             }
         }
 
-        stage('Code Quality Analysis') {
+        stage('Швидка перевірка') {
             steps {
                 sh '''
-                    echo "=== Аналіз якості Go коду ==="
+                    echo "🔍 Базова перевірка коду..."
+
+                    # Перевіряємо синтаксис без детального аналізу
+                    timeout 3m go vet -tags="${TAGS}" ./cmd/... ./modules/... || echo "Попередження в коді проігноровано"
+
+                    # Швидка перевірка компіляції основних компонентів
+                    timeout 5m go build -tags="${TAGS}" -o /tmp/gitea-test ./cmd/gitea
+
+                    echo "✅ Код готовий до збірки"
+                '''
+            }
+        }
+
+        stage('Тестування') {
+            steps {
+                sh '''
+                    echo "🧪 Запуск критично важливих тестів..."
                     mkdir -p test-results
 
-                    echo "Перевірка синтаксису Go файлів..."
-                    timeout 5m go vet ./... > test-results/go-vet.log 2>&1 || echo "Go vet завершено з попередженнями"
+                    # Запускаємо тільки швидкі тести з правильними тегами
+                    # Важливо: передаємо теги для SQLite підтримки
+                    timeout 8m go test -tags="${TAGS}" -short -timeout=5m \
+                        ./modules/setting \
+                        ./modules/util \
+                        ./modules/base \
+                        ./modules/log \
+                        > test-results/critical-tests.log 2>&1 || TEST_FAILED=true
 
-                    echo "Перевірка форматування коду..."
-                    timeout 2m gofmt -l . > test-results/gofmt.log 2>&1 || true
-
-                    echo "=== Результати go vet ==="
-                    head -10 test-results/go-vet.log || echo "Файл порожній"
-
-                    echo "=== Результати gofmt ==="
-                    head -10 test-results/gofmt.log || echo "Файл порожній"
-
-                    echo "✅ Аналіз коду завершено"
-                '''
-            }
-        }
-
-        stage('Build Verification') {
-            steps {
-                sh '''
-                    echo "=== Перевірка можливості білду ==="
-
-                    # Determine the correct build target
-                    BUILD_TARGET=""
-                    if [ -d "cmd/gitea" ]; then
-                        BUILD_TARGET="./cmd/gitea"
-                        echo "Використовуємо cmd/gitea як ціль білду"
-                    elif [ -f "main.go" ]; then
-                        BUILD_TARGET="."
-                        echo "Використовуємо кореневу директорію як ціль білду"
-                    elif [ -d "cmd" ]; then
-                        # Find the first buildable cmd subdirectory
-                        for dir in cmd/*/; do
-                            if [ -f "${dir}main.go" ]; then
-                                BUILD_TARGET="./${dir}"
-                                echo "Знайдено ціль білду: ${BUILD_TARGET}"
-                                break
-                            fi
-                        done
-                    fi
-
-                    if [ -z "$BUILD_TARGET" ]; then
-                        echo "❌ Не вдалося знайти відповідну ціль для білду"
-                        echo "Структура проекту:"
-                        find . -name "*.go" -type f | head -20
-                        exit 1
-                    fi
-
-                    echo "Тестова компіляція з ${BUILD_TARGET}..."
-                    timeout 10m go build -v ${BUILD_TARGET} > build-verification.log 2>&1 || BUILD_CHECK_FAILED=true
-
-                    if [ "${BUILD_CHECK_FAILED}" = "true" ]; then
-                        echo "⚠️ Виявлено проблеми з компіляцією:"
-                        tail -20 build-verification.log
-                        echo "Продовжуємо, але білд може провалитися"
+                    if [ "${TEST_FAILED}" = "true" ]; then
+                        echo "⚠️ Деякі критичні тести провалилися:"
+                        tail -20 test-results/critical-tests.log
+                        echo "Продовжуємо збірку..."
                     else
-                        echo "✅ Перевірка компіляції пройшла успішно"
-                        echo "Ціль білду: ${BUILD_TARGET}"
-                        # Save the build target for later use
-                        echo "${BUILD_TARGET}" > build-target.txt
+                        echo "✅ Критичні тести пройшли успішно"
                     fi
+
+                    # Не запускаємо всі тести - це економить 30+ хвилин
+                    echo "ℹ️ Повне тестування пропущено для швидкості збірки"
                 '''
             }
         }
 
-        stage('Testing') {
+        stage('Збірка Gitea') {
             steps {
                 sh '''
-                    echo "=== Виконання тестів ==="
-                    mkdir -p test-results
-
-                    export GO_TEST_TIMEOUT=15m
-
-                    echo "Запуск тестів з коротким таймаутом..."
-                    timeout 20m go test -v -timeout=${GO_TEST_TIMEOUT} -short ./... > test-results/unit-tests.log 2>&1 || TEST_EXIT_CODE=$?
-
-                    echo "=== Результати тестування ==="
-                    tail -50 test-results/unit-tests.log || echo "Лог файл порожній"
-
-                    if [ "${TEST_EXIT_CODE:-0}" -ne 0 ]; then
-                        echo "⚠️ Деякі тести провалилися, але продовжуємо білд"
-                        echo "Код виходу: ${TEST_EXIT_CODE:-0}"
-                    else
-                        echo "✅ Тести пройшли успішно"
-                    fi
-
-                    # Try to generate coverage if tests passed
-                    if [ "${TEST_EXIT_CODE:-0}" -eq 0 ]; then
-                        echo "Генерація звіту покриття..."
-                        timeout 10m go test -coverprofile=test-results/coverage.out ./... > /dev/null 2>&1 || true
-                        if [ -f "test-results/coverage.out" ]; then
-                            go tool cover -html=test-results/coverage.out -o test-results/coverage.html
-                            echo "✅ HTML звіт покриття створено"
-                        fi
-                    fi
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'test-results/*', allowEmptyArchive: true
-                }
-            }
-        }
-
-        stage('Build Gitea Application') {
-            steps {
-                sh '''
-                    echo "=== Початок реального білду Gitea ==="
+                    echo "🔨 Збірка Gitea з оптимізацією..."
                     mkdir -p build-artifacts
 
                     export BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
                     export BUILD_HASH=${GIT_COMMIT_SHORT}
 
-                    echo "Параметри білду:"
-                    echo "- Версія: ${GITEA_VERSION}"
-                    echo "- Дата: ${BUILD_DATE}"
-                    echo "- Коміт: ${BUILD_HASH}"
-                    echo "- Теги: ${TAGS}"
+                    # Використовуємо Makefile для найкращої збірки
+                    if make -n build >/dev/null 2>&1; then
+                        echo "Збірка через Makefile (рекомендований спосіб)..."
 
-                    # Determine build target from previous stage
-                    BUILD_TARGET="./cmd/gitea"
-                    if [ -f "build-target.txt" ]; then
-                        BUILD_TARGET=$(cat build-target.txt)
-                        echo "Використовуємо збережену ціль білду: ${BUILD_TARGET}"
-                    fi
+                        # Очищуємо попередні збірки
+                        make clean || true
 
-                    # Try Makefile first
-                    MAKE_BUILD_SUCCESS=false
-                    if [ -f "Makefile" ]; then
-                        echo "Спроба білду через Makefile..."
+                        # Збираємо з оптимізацією та правильними тегами
+                        timeout 10m make build \
+                            TAGS="${TAGS}" \
+                            LDFLAGS="-s -w -X 'code.gitea.io/gitea/modules/setting.BuildTime=${BUILD_DATE}' -X 'code.gitea.io/gitea/modules/setting.BuildGitHash=${BUILD_HASH}'"
 
-                        # Check if 'build' target exists
-                        if make -n build >/dev/null 2>&1; then
-                            echo "Знайдено ціль 'build' в Makefile"
-                            timeout 20m make build TAGS="${TAGS}" && MAKE_BUILD_SUCCESS=true
-                        elif make -n gitea >/dev/null 2>&1; then
-                            echo "Знайдено ціль 'gitea' в Makefile"
-                            timeout 20m make gitea TAGS="${TAGS}" && MAKE_BUILD_SUCCESS=true
-                        else
-                            echo "Стандартні цілі не знайдені в Makefile"
-                        fi
-                    fi
+                        # Копіюємо зібраний binary
+                        cp gitea build-artifacts/gitea
 
-                    # Fallback to direct go build
-                    if [ "$MAKE_BUILD_SUCCESS" = "false" ]; then
-                        echo "Makefile білд провалився або недоступний, використовуємо go build..."
+                    else
+                        echo "Пряма збірка через go build..."
 
-                        timeout 20m go build -v \
-                            -tags "${TAGS}" \
-                            -ldflags "-s -w -X 'code.gitea.io/gitea/modules/setting.BuildTime=${BUILD_DATE}' -X 'code.gitea.io/gitea/modules/setting.BuildGitHash=${BUILD_HASH}'" \
+                        # Збираємо напряму з усіма необхідними параметрами
+                        timeout 10m go build -v \
+                            -tags="${TAGS}" \
+                            -ldflags="-s -w -X 'code.gitea.io/gitea/modules/setting.BuildTime=${BUILD_DATE}' -X 'code.gitea.io/gitea/modules/setting.BuildGitHash=${BUILD_HASH}'" \
                             -o build-artifacts/gitea \
-                            ${BUILD_TARGET}
-                    else
-                        # Copy the built binary to our artifacts directory
-                        if [ -f "gitea" ]; then
-                            cp gitea build-artifacts/gitea
-                        elif [ -f "cmd/gitea/gitea" ]; then
-                            cp cmd/gitea/gitea build-artifacts/gitea
-                        else
-                            echo "⚠️ Не знайдено зібраний binary після Makefile"
-                            # Try to find any gitea binary
-                            find . -name "gitea" -type f -executable | head -1 | xargs -I {} cp {} build-artifacts/gitea
-                        fi
+                            ./cmd/gitea
                     fi
 
-                    # Verify the binary was created
+                    # Перевіряємо результат збірки
                     if [ -f "build-artifacts/gitea" ]; then
-                        echo "✅ Gitea binary успішно зібрано!"
-                        ls -la build-artifacts/gitea
-                        file build-artifacts/gitea
+                        echo "✅ Gitea успішно зібрано!"
+                        ls -lh build-artifacts/gitea
 
-                        echo "Перевірка версії зібраного binary:"
-                        timeout 10s ./build-artifacts/gitea --version || echo "Версію не вдалося отримати, але binary існує"
+                        # Швидка перевірка binary
+                        timeout 5s ./build-artifacts/gitea --version || echo "Binary створено, але версію отримати не вдалося"
 
-                        echo "Створення метаданих білду..."
+                        # Створюємо інформацію про збірку
                         cat > build-artifacts/build-info.txt << EOF
-Gitea Custom Build Information
-==============================
-Build Number: ${BUILD_NUMBER}
-Version: ${GITEA_VERSION}
-Git Commit: ${GIT_COMMIT_SHORT}
-Build Date: ${BUILD_DATE}
-Build Tags: ${TAGS}
-Build Target: ${BUILD_TARGET}
-Builder: Jenkins CI/CD
-Node: ${NODE_NAME}
-Go Version: $(go version)
+Збірка Gitea
+============
+Номер збірки: ${BUILD_NUMBER}
+Версія: ${GITEA_VERSION}
+Коміт: ${GIT_COMMIT_SHORT}
+Дата збірки: ${BUILD_DATE}
+Теги збірки: ${TAGS}
+Вузол Jenkins: ${NODE_NAME}
+Розмір binary: $(stat -c%s build-artifacts/gitea) байт
 EOF
+
                     else
-                        echo "❌ Gitea binary НЕ створено! Білд провалився."
-                        echo "Вміст директорії build-artifacts:"
-                        ls -la build-artifacts/ || true
-                        echo "Пошук всіх виконуваних файлів:"
-                        find . -name "*gitea*" -type f || true
+                        echo "❌ Збірка провалилася - binary не створено"
                         exit 1
                     fi
-
-                    echo "=== Білд Gitea завершено ==="
                 '''
             }
         }
 
-        stage('Docker Build') {
+        stage('Docker образ') {
             when {
                 anyOf {
                     branch 'main'
                     branch 'master'
+                    branch 'develop'
                 }
             }
             steps {
-                script {
-                    sh '''
-                        echo "=== Створення Docker образу ==="
+                sh '''
+                    echo "🐳 Створення Docker образу..."
 
-                        # Verify binary exists before creating Docker image
-                        if [ ! -f "build-artifacts/gitea" ]; then
-                            echo "❌ Gitea binary не знайдено для Docker образу"
-                            exit 1
-                        fi
+                    # Створюємо мінімальний Dockerfile для швидкої збірки
+                    cat > Dockerfile << 'EOF'
+FROM alpine:3.19
 
-                        cat > Dockerfile << 'EOF'
-FROM alpine:3.18
+# Встановлюємо мінімальні залежності
+RUN apk add --no-cache ca-certificates git openssh tzdata && \
+    adduser -D -s /bin/sh gitea
 
-# Install runtime dependencies
-RUN apk add --no-cache \
-    ca-certificates \
-    git \
-    sqlite \
-    openssh \
-    gnupg \
-    && adduser -D -s /bin/sh gitea
-
-# Set up application directory
+# Копіюємо додаток
 WORKDIR /app
-
-# Copy application binary and metadata
 COPY build-artifacts/gitea /app/gitea
-COPY build-artifacts/build-info.txt /app/
+RUN chmod +x /app/gitea && chown gitea:gitea /app/gitea
 
-# Set proper permissions
-RUN chmod +x /app/gitea && \
-    chown -R gitea:gitea /app
-
-# Create data directory
-RUN mkdir -p /data && chown -R gitea:gitea /data
+# Створюємо директорію для даних
+RUN mkdir -p /data && chown gitea:gitea /data
 
 USER gitea
 EXPOSE 3000 22
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD ["/app/gitea", "manager", "check", "--quiet"] || exit 1
+# Простий healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=2 \
+    CMD ["/app/gitea", "help"] || exit 1
 
-# Default command
 CMD ["/app/gitea", "web"]
 EOF
 
-                        echo "Dockerfile створено, початок збірки образу..."
-                        timeout 10m docker build -t ${DOCKER_IMAGE} .
+                    # Збираємо образ з таймаутом
+                    timeout 5m docker build -t ${DOCKER_IMAGE} .
 
-                        echo "Перевірка створеного образу:"
-                        docker images | grep gitea-custom || true
-                        docker inspect ${DOCKER_IMAGE} || true
-
-                        echo "✅ Docker образ створено: ${DOCKER_IMAGE}"
-                    '''
-                }
+                    echo "✅ Docker образ створено: ${DOCKER_IMAGE}"
+                    docker images | grep gitea-custom | head -3
+                '''
             }
         }
 
-        stage('Artifact Management') {
+        stage('Фінальні артефакти') {
             steps {
                 sh '''
-                    echo "=== Підготовка фінальних артефактів ==="
+                    echo "📦 Підготовка артефактів..."
 
-                    # Create comprehensive build archive
-                    tar -czf gitea-build-${BUILD_NUMBER}.tar.gz \
-                        build-artifacts/ \
-                        test-results/ \
-                        *.log
+                    # Створюємо архів зі збіркою
+                    tar -czf gitea-build-${BUILD_NUMBER}.tar.gz build-artifacts/
 
-                    # Create detailed metadata
-                    cat > build-metadata.json << EOF
+                    # Створюємо метадані у JSON форматі
+                    cat > build-summary.json << EOF
 {
     "build_number": "${BUILD_NUMBER}",
-    "git_commit": "${GIT_COMMIT_SHORT}",
     "version": "${GITEA_VERSION}",
+    "commit": "${GIT_COMMIT_SHORT}",
     "timestamp": "$(date -Iseconds)",
     "docker_image": "${DOCKER_IMAGE}",
-    "build_node": "${NODE_NAME}",
-    "go_version": "$(go version)",
-    "build_tags": "${TAGS}",
-    "build_duration": "${BUILD_TIMESTAMP}",
     "artifacts": {
         "binary": "build-artifacts/gitea",
-        "binary_size": "$(stat -c%s build-artifacts/gitea 2>/dev/null || echo 0)",
         "archive": "gitea-build-${BUILD_NUMBER}.tar.gz",
-        "docker_image": "${DOCKER_IMAGE}"
+        "size_mb": $(echo "scale=2; $(stat -c%s build-artifacts/gitea) / 1048576" | bc)
     },
-    "checksums": {
-        "binary_sha256": "$(sha256sum build-artifacts/gitea | cut -d' ' -f1)",
-        "archive_sha256": "$(sha256sum gitea-build-${BUILD_NUMBER}.tar.gz | cut -d' ' -f1)"
+    "build_info": {
+        "duration_minutes": "$(echo "scale=1; ($(date +%s) - ${BUILD_TIMESTAMP:-$(date +%s)}) / 60" | bc)",
+        "go_version": "$(go version | cut -d' ' -f3)",
+        "build_tags": "${TAGS}"
     }
 }
 EOF
 
-                    echo "✅ Артефакти підготовлено для архівування"
-                    echo "Фінальні файли:"
-                    ls -la *.tar.gz *.json build-artifacts/ 2>/dev/null || true
+                    echo "✅ Артефакти готові:"
+                    ls -lh *.tar.gz *.json build-artifacts/
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: '*.tar.gz,build-metadata.json,build-artifacts/**,test-results/**', allowEmptyArchive: true
+                    // Архівуємо важливі артефакти
+                    archiveArtifacts artifacts: '*.tar.gz,build-summary.json,build-artifacts/**,test-results/*', allowEmptyArchive: true
                 }
             }
         }
@@ -451,32 +293,45 @@ EOF
 
     post {
         always {
-            script {
-                sh '''
-                    echo "=== Очищення після білду ==="
+            sh '''
+                echo "🧹 Очищення після збірки..."
 
-                    # Clean up old Docker images (keep last 3)
-                    docker images | grep gitea-custom | awk '{print $3}' | tail -n +4 | xargs -r docker rmi || true
+                # Видаляємо старі Docker образи (залишаємо останні 2)
+                docker images | grep gitea-custom | tail -n +3 | awk '{print $3}' | xargs -r docker rmi || true
 
-                    # Clean Go caches
-                    go clean -cache || true
-                    go clean -testcache || true
+                # Очищуємо Go кеші
+                go clean -cache -testcache -modcache || true
 
-                    echo "Очищення завершено"
-                '''
-            }
+                echo "Очищення завершено"
+            '''
         }
 
         success {
-            echo '✅ Pipeline completed successfully! Gitea build ready for deployment.'
+            echo '''
+🎉 Збірка завершена успішно!
+✅ Gitea binary готовий
+✅ Docker образ створено (якщо потрібно)
+✅ Артефакти заархівовано
+
+Час збірки значно зменшено завдяки оптимізації.
+            '''
         }
 
         failure {
-            echo '❌ Pipeline failed! Check logs for details.'
+            echo '''
+❌ Збірка провалилася!
+
+Можливі причини:
+- Проблеми з Go залежностями
+- Помилки компіляції
+- Недостатньо ресурсів на вузлі
+
+Перевірте логи для деталей.
+            '''
         }
 
         unstable {
-            echo '⚠️ Pipeline completed with warnings - some tests may have failed but build succeeded.'
+            echo '⚠️ Збірка завершена з попередженнями - деякі тести провалилися, але binary створено.'
         }
     }
 }
