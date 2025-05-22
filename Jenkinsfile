@@ -1,15 +1,14 @@
 pipeline {
     agent any
 
-    tools {
-        go '1.21'
-    }
-
     environment {
+        GO_VERSION = '1.21.6'
         GOPROXY = 'https://proxy.golang.org,direct'
         GOSUMDB = 'sum.golang.org'
         CGO_ENABLED = '1'
-        PATH = "${tool('go')}/bin:${env.PATH}"
+        GOROOT = "${WORKSPACE}/go"
+        GOPATH = "${WORKSPACE}/gopath"
+        PATH = "${WORKSPACE}/go/bin:${env.PATH}"
     }
 
     stages {
@@ -20,11 +19,31 @@ pipeline {
             }
         }
 
-        stage('Setup') {
+        stage('Setup Go') {
             steps {
                 sh '''
-                    echo "Go version:"
-                    go version
+                    # Перевіряємо чи Go вже встановлений
+                    if [ ! -f "${WORKSPACE}/go/bin/go" ]; then
+                        echo "Installing Go ${GO_VERSION}..."
+
+                        # Визначаємо архітектуру
+                        ARCH=$(uname -m)
+                        case $ARCH in
+                            x86_64) GOARCH="amd64" ;;
+                            aarch64|arm64) GOARCH="arm64" ;;
+                            *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
+                        esac
+
+                        # Скачуємо та встановлюємо Go
+                        wget -q https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz
+                        tar -xzf go${GO_VERSION}.linux-${GOARCH}.tar.gz
+                        rm go${GO_VERSION}.linux-${GOARCH}.tar.gz
+                    fi
+
+                    # Перевіряємо встановлення
+                    ${WORKSPACE}/go/bin/go version
+
+                    # Перевіряємо Makefile
                     echo "Workspace contents:"
                     ls -la
                     test -f Makefile || (echo "Makefile not found" && exit 1)
@@ -38,6 +57,7 @@ pipeline {
                     steps {
                         sh '''
                             echo "Building Gitea..."
+                            export PATH="${WORKSPACE}/go/bin:$PATH"
                             make clean || echo "Clean target not found, continuing..."
                             make build
                         '''
@@ -48,8 +68,9 @@ pipeline {
                     steps {
                         sh '''
                             echo "Running tests..."
+                            export PATH="${WORKSPACE}/go/bin:$PATH"
                             make test-backend || make test || echo "Running basic go test..."
-                            go test -v ./... || echo "Some tests failed but continuing..."
+                            ${WORKSPACE}/go/bin/go test -v ./... || echo "Some tests failed but continuing..."
                         '''
                     }
                     post {
@@ -63,6 +84,7 @@ pipeline {
                     steps {
                         sh '''
                             echo "Running linter..."
+                            export PATH="${WORKSPACE}/go/bin:$PATH"
                             make lint-backend || make lint || echo "Lint not available, skipping..."
                         '''
                     }
