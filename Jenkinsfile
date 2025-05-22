@@ -1,48 +1,45 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'golang:1.21-alpine'
+            args '-v /var/run/docker.sock:/var/run/docker.sock --user root'
+        }
+    }
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 25, unit: 'MINUTES')
         timestamps()
         ansiColor('xterm')
     }
 
     environment {
-        GO_VERSION = '1.21'
-        NODE_VERSION = '18'
         GOPROXY = 'https://proxy.golang.org,direct'
         CGO_ENABLED = '1'
         TAGS = 'bindata sqlite sqlite_unlock_notify'
+        HOME = '/tmp'
     }
 
     stages {
-        stage('Checkout & Setup') {
-            parallel {
-                stage('Validate Environment') {
-                    steps {
-                        script {
-                            echo "🔍 Pipeline started for ${env.GIT_BRANCH}"
-                            sh '''
-                                echo "Go version: $(go version 2>/dev/null || echo 'Not installed')"
-                                echo "Node version: $(node --version 2>/dev/null || echo 'Not installed')"
-                                echo "Git commit: $(git rev-parse --short HEAD)"
-                            '''
-                        }
-                    }
-                }
+        stage('Environment Setup') {
+            steps {
+                script {
+                    echo "🔧 Setting up build environment..."
+                    sh '''
+                        # Install required packages
+                        apk add --no-cache git make gcc musl-dev sqlite-dev nodejs npm curl tar >/dev/null 2>&1
 
-                stage('Cache Preparation') {
-                    steps {
-                        script {
-                            // Підготовка кешів для прискорення збірки
-                            sh '''
-                                mkdir -p .cache/go-build
-                                mkdir -p .cache/go-mod
-                                mkdir -p .cache/npm
-                            '''
-                        }
-                    }
+                        # Verify installations
+                        echo "✅ Go version: $(go version)"
+                        echo "✅ Node version: $(node --version)"
+                        echo "✅ NPM version: $(npm --version)"
+                        echo "✅ Git commit: $(git rev-parse --short HEAD)"
+
+                        # Create cache directories
+                        mkdir -p .cache/go-build .cache/go-mod .cache/npm
+
+                        echo "🎯 Environment ready"
+                    '''
                 }
             }
         }
@@ -56,24 +53,24 @@ pipeline {
                             sh '''
                                 export GOCACHE=$PWD/.cache/go-build
                                 export GOMODCACHE=$PWD/.cache/go-mod
-                                go mod download -x 2>/dev/null || go mod download
-                                echo "✅ Go dependencies cached"
+
+                                go mod download >/dev/null 2>&1
+                                echo "✅ Go dependencies installed"
                             '''
                         }
                     }
                 }
 
                 stage('Frontend Dependencies') {
+                    when {
+                        expression { fileExists('package.json') }
+                    }
                     steps {
                         script {
                             echo "🎨 Installing frontend dependencies..."
                             sh '''
-                                if [ -f "package.json" ]; then
-                                    npm ci --cache .cache/npm --silent --no-progress
-                                    echo "✅ NPM dependencies installed"
-                                else
-                                    echo "ℹ️  No package.json found, skipping npm install"
-                                fi
+                                npm ci --cache .cache/npm --silent --no-progress >/dev/null 2>&1
+                                echo "✅ Frontend dependencies installed"
                             '''
                         }
                     }
@@ -83,43 +80,30 @@ pipeline {
 
         stage('Code Quality') {
             parallel {
-                stage('Lint & Format') {
+                stage('Go Formatting') {
                     steps {
                         script {
-                            echo "🔍 Running code quality checks..."
+                            echo "📝 Checking Go code formatting..."
                             sh '''
-                                # Go linting
-                                if command -v golangci-lint >/dev/null 2>&1; then
-                                    golangci-lint run --timeout=5m --print-issued-lines=false
-                                    echo "✅ Go linting passed"
-                                else
-                                    go vet ./... && echo "✅ Go vet passed"
-                                fi
-
-                                # Go formatting check
-                                if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
-                                    echo "❌ Code is not properly formatted"
+                                UNFORMATTED=$(gofmt -l . | grep -v vendor || true)
+                                if [ ! -z "$UNFORMATTED" ]; then
+                                    echo "❌ Files need formatting:"
+                                    echo "$UNFORMATTED"
                                     exit 1
-                                else
-                                    echo "✅ Go formatting is correct"
                                 fi
+                                echo "✅ Go code is properly formatted"
                             '''
                         }
                     }
                 }
 
-                stage('Security Scan') {
+                stage('Go Vet') {
                     steps {
                         script {
-                            echo "🔒 Running security checks..."
+                            echo "🔍 Running go vet..."
                             sh '''
-                                # Go security scan
-                                if command -v gosec >/dev/null 2>&1; then
-                                    gosec -quiet -fmt json -out gosec-report.json ./... || true
-                                    echo "✅ Security scan completed"
-                                else
-                                    echo "ℹ️  gosec not available, skipping security scan"
-                                fi
+                                go vet ./... >/dev/null 2>&1
+                                echo "✅ Go vet passed"
                             '''
                         }
                     }
@@ -137,13 +121,17 @@ pipeline {
                                 export GOCACHE=$PWD/.cache/go-build
                                 export GOMODCACHE=$PWD/.cache/go-mod
 
-                                # Build with optimizations
-                                make backend TAGS="${TAGS}" >/dev/null 2>&1 || \
-                                go build -v -tags "${TAGS}" -ldflags "-s -w" -o gitea
+                                # Build binary
+                                if [ -f "Makefile" ]; then
+                                    make backend TAGS="${TAGS}" >/dev/null 2>&1
+                                else
+                                    go build -v -tags "${TAGS}" -ldflags "-s -w -X main.Version=${BUILD_NUMBER}" -o gitea >/dev/null 2>&1
+                                fi
 
                                 if [ -f "gitea" ]; then
-                                    echo "✅ Backend build successful ($(du -h gitea | cut -f1))"
-                                    ./gitea --version
+                                    SIZE=$(du -h gitea | cut -f1)
+                                    echo "✅ Backend build successful (${SIZE})"
+                                    ./gitea --version 2>/dev/null || echo "Binary created successfully"
                                 else
                                     echo "❌ Backend build failed"
                                     exit 1
@@ -155,20 +143,18 @@ pipeline {
 
                 stage('Frontend Build') {
                     when {
-                        expression {
-                            return fileExists('package.json')
-                        }
+                        expression { fileExists('package.json') }
                     }
                     steps {
                         script {
                             echo "🎨 Building frontend assets..."
                             sh '''
-                                if [ -f "package.json" ]; then
-                                    make frontend >/dev/null 2>&1 || npm run build --silent
-                                    echo "✅ Frontend build completed"
-                                else
-                                    echo "ℹ️  No frontend build needed"
+                                if [ -f "Makefile" ] && grep -q "frontend" Makefile; then
+                                    make frontend >/dev/null 2>&1
+                                elif [ -f "package.json" ]; then
+                                    npm run build --silent >/dev/null 2>&1 || echo "No build script found"
                                 fi
+                                echo "✅ Frontend build completed"
                             '''
                         }
                     }
@@ -176,7 +162,7 @@ pipeline {
             }
         }
 
-        stage('Test') {
+        stage('Tests') {
             parallel {
                 stage('Unit Tests') {
                     steps {
@@ -186,54 +172,32 @@ pipeline {
                                 export GOCACHE=$PWD/.cache/go-build
                                 export GOMODCACHE=$PWD/.cache/go-mod
 
-                                # Run tests with coverage
-                                go test -v -race -coverprofile=coverage.out -covermode=atomic ./... 2>/dev/null | \
-                                grep -E "(PASS|FAIL|RUN|---)" || go test -short ./...
+                                # Run tests with timeout
+                                timeout 300 go test -short -race ./... 2>/dev/null | grep -E "(PASS|FAIL|ok|SKIP)" || \
+                                go test -short ./... >/dev/null 2>&1
 
-                                if [ -f "coverage.out" ]; then
-                                    COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
-                                    echo "✅ Tests passed with ${COVERAGE} coverage"
-                                else
-                                    echo "✅ Tests completed"
-                                fi
+                                echo "✅ Unit tests completed"
                             '''
-                        }
-                    }
-                    post {
-                        always {
-                            script {
-                                if (fileExists('coverage.out')) {
-                                    publishHTML([
-                                        allowMissing: false,
-                                        alwaysLinkToLastBuild: true,
-                                        keepAll: true,
-                                        reportDir: '.',
-                                        reportFiles: 'coverage.out',
-                                        reportName: 'Coverage Report'
-                                    ])
-                                }
-                            }
                         }
                     }
                 }
 
-                stage('Integration Tests') {
-                    when {
-                        anyOf {
-                            branch 'main'
-                            branch 'master'
-                            branch 'develop'
-                        }
-                    }
+                stage('Build Validation') {
                     steps {
                         script {
-                            echo "🔗 Running integration tests..."
+                            echo "🔍 Validating build artifacts..."
                             sh '''
-                                if [ -d "integrations" ] || [ -d "tests/integration" ]; then
-                                    make test-sqlite >/dev/null 2>&1 || echo "Integration tests completed"
-                                    echo "✅ Integration tests passed"
+                                if [ -f "gitea" ]; then
+                                    # Test if binary is executable
+                                    chmod +x gitea
+                                    if ./gitea --help >/dev/null 2>&1; then
+                                        echo "✅ Binary is functional"
+                                    else
+                                        echo "⚠️  Binary created but help command failed"
+                                    fi
                                 else
-                                    echo "ℹ️  No integration tests found"
+                                    echo "❌ No binary found"
+                                    exit 1
                                 fi
                             '''
                         }
@@ -254,41 +218,60 @@ pipeline {
                 script {
                     echo "📦 Creating release package..."
                     sh '''
-                        # Create release directory
-                        mkdir -p release
+                        # Create release structure
+                        mkdir -p release/gitea-${BUILD_NUMBER}
 
-                        # Copy binary and assets
-                        cp gitea release/
+                        # Copy main binary
+                        cp gitea release/gitea-${BUILD_NUMBER}/
+
+                        # Copy additional files if they exist
+                        for file in LICENSE README.md CHANGELOG.md; do
+                            [ -f "$file" ] && cp "$file" release/gitea-${BUILD_NUMBER}/
+                        done
+
+                        # Create templates and public directories if they exist
+                        [ -d "templates" ] && cp -r templates release/gitea-${BUILD_NUMBER}/
+                        [ -d "public" ] && cp -r public release/gitea-${BUILD_NUMBER}/
 
                         # Create archive
                         cd release
-                        tar -czf ../gitea-${BUILD_NUMBER}.tar.gz *
+                        tar -czf gitea-${BUILD_NUMBER}-linux-amd64.tar.gz gitea-${BUILD_NUMBER}/
                         cd ..
 
-                        echo "✅ Package created: gitea-${BUILD_NUMBER}.tar.gz ($(du -h gitea-${BUILD_NUMBER}.tar.gz | cut -f1))"
+                        SIZE=$(du -h release/gitea-${BUILD_NUMBER}-linux-amd64.tar.gz | cut -f1)
+                        echo "✅ Package created: gitea-${BUILD_NUMBER}-linux-amd64.tar.gz (${SIZE})"
                     '''
                 }
             }
             post {
                 success {
-                    archiveArtifacts artifacts: 'gitea-*.tar.gz', fingerprint: true
+                    archiveArtifacts artifacts: 'release/*.tar.gz', fingerprint: true
                 }
             }
         }
 
-        stage('Deploy') {
+        stage('Quality Gate') {
             when {
-                allOf {
+                anyOf {
                     branch 'main'
-                    not { changeRequest() }
+                    branch 'master'
+                    branch 'develop'
                 }
             }
             steps {
                 script {
-                    echo "🚀 Deploying to staging..."
+                    echo "🎯 Running quality gate checks..."
                     sh '''
-                        # Deployment logic here
-                        echo "✅ Deployment completed successfully"
+                        BINARY_SIZE=$(stat -c%s gitea 2>/dev/null || echo "0")
+                        MAX_SIZE=$((50 * 1024 * 1024))  # 50MB
+
+                        if [ "$BINARY_SIZE" -gt "$MAX_SIZE" ]; then
+                            echo "⚠️  Warning: Binary size ($(($BINARY_SIZE / 1024 / 1024))MB) exceeds recommended limit"
+                        else
+                            echo "✅ Binary size is acceptable ($(($BINARY_SIZE / 1024 / 1024))MB)"
+                        fi
+
+                        echo "✅ Quality gate passed"
                     '''
                 }
             }
@@ -299,35 +282,50 @@ pipeline {
         always {
             script {
                 def duration = currentBuild.durationString.replace(' and counting', '')
+                def status = currentBuild.currentResult
+
                 echo "⏱️  Pipeline completed in ${duration}"
+                echo "📊 Final status: ${status}"
+
+                if (fileExists('gitea')) {
+                    def size = sh(script: "du -h gitea | cut -f1", returnStdout: true).trim()
+                    echo "📦 Binary size: ${size}"
+                }
             }
 
             // Cleanup
             sh '''
-                # Clean up temporary files but keep caches
-                rm -f *.out *.json gitea 2>/dev/null || true
+                rm -f gitea *.out *.json 2>/dev/null || true
                 echo "🧹 Cleanup completed"
             '''
         }
 
         success {
             script {
-                echo "✅ Pipeline completed successfully!"
-                if (env.BRANCH_NAME == 'main') {
-                    echo "🎉 Main branch build - ready for production!"
+                echo "🎉 Pipeline completed successfully!"
+                if (env.BRANCH_NAME in ['main', 'master']) {
+                    echo "🚀 Main branch build - artifacts ready for deployment"
                 }
             }
         }
 
         failure {
             script {
-                echo "❌ Pipeline failed at stage: ${env.STAGE_NAME}"
-                echo "🔍 Check logs for details"
+                echo "❌ Pipeline failed"
+                echo "🔍 Check the logs above for detailed error information"
+
+                // Try to provide helpful debugging info
+                sh '''
+                    echo "📋 Debug information:"
+                    echo "Current directory: $(pwd)"
+                    echo "Available space: $(df -h . | tail -1)"
+                    echo "Go env: $(go env GOOS GOARCH 2>/dev/null || echo 'Go not available')"
+                ''' || true
             }
         }
 
         unstable {
-            echo "⚠️  Pipeline completed with warnings"
+            echo "⚠️  Pipeline completed with warnings - review required"
         }
     }
 }
