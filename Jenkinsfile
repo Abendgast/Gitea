@@ -29,19 +29,29 @@ pipeline {
             }
         }
 
-        stage('Detect Changes') {
-            steps {
-                script {
-                    def changes = sh(
-                        script: 'git diff --name-only HEAD~1',
-                        returnStdout: true
-                    ).trim().split('\n')
 
-                    env.RUN_GO = changes.any { it.endsWith('.go') } ? 'true' : 'false'
-                    env.RUN_NODE = changes.any { it.endsWith('.js') || it.endsWith('.ts') || it.startsWith('package') } ? 'true' : 'false'
-                }
-            }
+        stage('Detect Changes') {
+    steps {
+        script {
+            sh 'git fetch --depth=2 origin main'  // гарантовано мати два коміти
+            def changes = sh(
+                script: 'git diff --name-only origin/main~1 origin/main',
+                returnStdout: true
+            ).trim().split('\n')
+
+            env.RUN_GO = changes.any { it.endsWith('.go') } ? 'true' : 'false'
+            env.RUN_NODE = changes.any { it.endsWith('.js') || it.endsWith('.ts') || it.startsWith('package') } ? 'true' : 'false'
+
+            echo "RUN_GO = ${env.RUN_GO}"
+            echo "RUN_NODE = ${env.RUN_NODE}"
         }
+    }
+}
+
+
+
+
+
 
         stage('Go Test') {
             when {
