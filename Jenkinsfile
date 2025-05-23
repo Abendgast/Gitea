@@ -73,16 +73,18 @@ pipeline {
                     // Збереження у файл для подальшого використання
                     writeFile file: 'changed_files.txt', text: changedFiles
 
-                    // Аналіз типів файлів
-                    def goFiles = changedFiles.split('\n').findAll { it.endsWith('.go') }
-                    def jsFiles = changedFiles.split('\n').findAll { it.matches('.*\\.(js|ts|vue)$') }
-                    def configFiles = changedFiles.split('\n').findAll { it.matches('.*\\.(yml|yaml|json|toml|env)$') }
-                    def dockerFiles = changedFiles.split('\n').findAll { it.matches('.*(Dockerfile|docker-compose).*') }
+                    // Аналіз типів файлів - переконуємося що changedFiles не null
+                    def filesList = changedFiles ? changedFiles.split('\n') : []
+                    def goFiles = filesList.findAll { it && it.endsWith('.go') }
+                    def jsFiles = filesList.findAll { it && it.matches('.*\\.(js|ts|vue)$') }
+                    def configFiles = filesList.findAll { it && it.matches('.*\\.(yml|yaml|json|toml|env)$') }
+                    def dockerFiles = filesList.findAll { it && it.matches('.*(Dockerfile|docker-compose).*') }
 
                     // Збереження результатів аналізу
                     writeFile file: 'changed_go_files.txt', text: goFiles.join('\n')
                     writeFile file: 'changed_js_files.txt', text: jsFiles.join('\n')
                     writeFile file: 'changed_config_files.txt', text: configFiles.join('\n')
+                    writeFile file: 'changed_docker_files.txt', text: dockerFiles.join('\n')
 
                     echo "🔍 Результати аналізу:"
                     echo "   Go файлів: ${goFiles.size()}"
@@ -90,12 +92,15 @@ pipeline {
                     echo "   Config файлів: ${configFiles.size()}"
                     echo "   Docker файлів: ${dockerFiles.size()}"
 
-                    // Зберігаємо статистику
+                    // Зберігаємо статистику у environment змінні
                     env.GO_FILES_COUNT = goFiles.size().toString()
                     env.JS_FILES_COUNT = jsFiles.size().toString()
                     env.CONFIG_FILES_COUNT = configFiles.size().toString()
                     env.DOCKER_FILES_COUNT = dockerFiles.size().toString()
-                    env.TOTAL_FILES_COUNT = changedFiles.split('\n').size().toString()
+                    env.TOTAL_FILES_COUNT = filesList.size().toString()
+
+                    // Зберігаємо changedFiles як environment змінну для використання в інших stages
+                    env.CHANGED_FILES_LIST = changedFiles
                 }
             }
         }
@@ -123,9 +128,15 @@ pipeline {
                         skipTests = true
                         echo "ℹ️ Немає змін - пропускаємо тести"
                     } else {
-                        def changedFiles = readFile('changed_files.txt').trim()
-                        def onlyDocs = changedFiles.split('\n').every {
-                            it.matches('.*\\.(md|txt|rst|doc)$') || it.startsWith('docs/')
+                        // Використовуємо environment змінну замість локальної
+                        def changedFilesFromEnv = env.CHANGED_FILES_LIST ?: ''
+                        def onlyDocs = false
+
+                        if (changedFilesFromEnv) {
+                            def filesList = changedFilesFromEnv.split('\n')
+                            onlyDocs = filesList.every { file ->
+                                file && (file.matches('.*\\.(md|txt|rst|doc)$') || file.startsWith('docs/'))
+                            }
                         }
 
                         if (onlyDocs) {
@@ -135,11 +146,13 @@ pipeline {
                     }
 
                     if (!skipTests) {
+                        def changedFilesContent = env.CHANGED_FILES_LIST ?: ''
+
                         // Стратегія на основі змін
-                        if (changedFiles.contains('main.go') || configCount > 0 || dockerCount > 0) {
+                        if (changedFilesContent.contains('main.go') || configCount > 0 || dockerCount > 0) {
                             testStrategy = 'core'
                             echo "🔥 Core зміни виявлено - core тестування"
-                        } else if (changedFiles.contains('models/') || changedFiles.contains('services/')) {
+                        } else if (changedFilesContent.contains('models/') || changedFilesContent.contains('services/')) {
                             testStrategy = 'extended'
                             echo "🚀 Зміни в моделях/сервісах - extended тестування"
                         } else if (goCount > 5 || totalCount > 15) {
@@ -240,20 +253,24 @@ pipeline {
                                     case "${TEST_STRATEGY}" in
                                         "minimal"|"targeted")
                                             echo "🎯 Цільове тестування"
-                                            CHANGED_GO_FILES=$(cat changed_go_files.txt | grep -v "^$" || true)
-                                            if [ -n "$CHANGED_GO_FILES" ]; then
-                                                echo "Тестуємо пакети зі змінених файлів:"
-                                                echo "$CHANGED_GO_FILES" | while read -r file; do
-                                                    if [ -n "$file" ]; then
-                                                        PKG_DIR=$(dirname "$file")
-                                                        if [ "$PKG_DIR" != "." ]; then
-                                                            echo "Тестування: ./$PKG_DIR"
-                                                            timeout 5m go test "./$PKG_DIR" -v -timeout=3m || echo "⚠️ Тести для $PKG_DIR завершились з попередженням"
+                                            if [ -f "changed_go_files.txt" ]; then
+                                                CHANGED_GO_FILES=$(cat changed_go_files.txt | grep -v "^$" || true)
+                                                if [ -n "$CHANGED_GO_FILES" ]; then
+                                                    echo "Тестуємо пакети зі змінених файлів:"
+                                                    echo "$CHANGED_GO_FILES" | while read -r file; do
+                                                        if [ -n "$file" ]; then
+                                                            PKG_DIR=$(dirname "$file")
+                                                            if [ "$PKG_DIR" != "." ]; then
+                                                                echo "Тестування: ./$PKG_DIR"
+                                                                timeout 5m go test "./$PKG_DIR" -v -timeout=3m || echo "⚠️ Тести для $PKG_DIR завершились з попередженням"
+                                                            fi
                                                         fi
-                                                    fi
-                                                done
+                                                    done
+                                                else
+                                                    echo "Немає Go файлів для тестування"
+                                                fi
                                             else
-                                                echo "Немає Go файлів для тестування"
+                                                echo "Файл changed_go_files.txt не знайдено"
                                             fi
                                         ;;
                                         "core")
@@ -309,12 +326,16 @@ pipeline {
                                 echo "=== Швидка перевірка якості коду ==="
 
                                 # Go форматування для змінених файлів
-                                CHANGED_GO_FILES=$(cat changed_go_files.txt | grep -v "^$" || true)
-                                if [ -n "$CHANGED_GO_FILES" ]; then
-                                    echo "Перевірка форматування Go файлів..."
-                                    echo "$CHANGED_GO_FILES" | head -5 | xargs -r gofmt -l || echo "Форматування перевірено"
+                                if [ -f "changed_go_files.txt" ]; then
+                                    CHANGED_GO_FILES=$(cat changed_go_files.txt | grep -v "^$" || true)
+                                    if [ -n "$CHANGED_GO_FILES" ]; then
+                                        echo "Перевірка форматування Go файлів..."
+                                        echo "$CHANGED_GO_FILES" | head -5 | xargs -r gofmt -l || echo "Форматування перевірено"
+                                    else
+                                        echo "Немає Go файлів для перевірки"
+                                    fi
                                 else
-                                    echo "Немає Go файлів для перевірки"
+                                    echo "Файл changed_go_files.txt не знайдено"
                                 fi
 
                                 echo "✅ Перевірка якості завершена"
@@ -421,7 +442,7 @@ pipeline {
 ❌ ПОМИЛКА! Jenkins Build #${BUILD_NUMBER}
 🚫 Pipeline завершився з помилкою
 🔒 Зміни НЕ були змержено в main
-🔍 Перевірте логи для деталей
+🔍 Перевірте логі для деталей
 📧 Стратегія була: ${env.TEST_STRATEGY ?: 'не визначена'}
             """
         }
