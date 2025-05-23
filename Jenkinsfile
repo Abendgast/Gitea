@@ -383,15 +383,21 @@ pipeline {
                             passwordVariable: 'GIT_PASSWORD'
                         )]) {
                             sh '''
-                                set -e  # Зупинка при помилці
+                                set -e # Зупинка при помилці
 
                                 echo "⚙️ Налаштування remote з авторизацією..."
                                 git remote set-url origin "https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Abendgast/Gitea.git"
 
                                 echo "📥 Отримання всіх гілок з remote..."
-                                timeout ${GIT_TIMEOUT}s git fetch origin --all --prune || {
+                                # ВИПРАВЛЕННЯ: використовуємо правильний синтаксис для fetch
+                                timeout ${GIT_TIMEOUT}s git fetch origin --prune || {
                                     echo "❌ Timeout або помилка при fetch"
                                     exit 1
+                                }
+
+                                # Додатково fetch всіх remote гілок
+                                timeout ${GIT_TIMEOUT}s git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune || {
+                                    echo "⚠️ Помилка при fetch всіх гілок, продовжуємо..."
                                 }
 
                                 # Показуємо що отримали
