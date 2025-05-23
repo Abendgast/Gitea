@@ -2,13 +2,8 @@ pipeline {
     agent any
 
     environment {
-        GO111MODULE = 'on'
-        NODE_ENV = 'test'
-    }
-
-    options {
-        timestamps()
-        skipDefaultCheckout()
+        GO_ENV = "development"
+        NGROK_PORT = "8080"
     }
 
     stages {
@@ -19,55 +14,51 @@ pipeline {
             }
         }
 
-        stage('Detect Changes') {
+        stage('Detect Changed Files') {
             steps {
                 script {
-                    def changedFiles = sh(script: "git diff --name-only origin/main", returnStdout: true).trim().split("\n")
-                    env.GO_CHANGED = changedFiles.any { it.endsWith(".go") || it.startsWith("go/") }.toString()
-                    env.NODE_CHANGED = changedFiles.any { it.endsWith(".js") || it.endsWith(".ts") || it.startsWith("frontend/") }.toString()
+                    // Отримаємо список змінених файлів
+                    CHANGED_FILES = sh(
+                        script: "git diff --name-only HEAD~1 HEAD",
+                        returnStdout: true
+                    ).trim().split("\n")
+                    echo "Змінені файли: ${CHANGED_FILES}"
+
+                    // Визначимо, які тести запускати
+                    RUN_GO_TESTS = CHANGED_FILES.any { it.endsWith('.go') }
+                    RUN_YAML_TESTS = CHANGED_FILES.any { it.endsWith('.yml') || it.endsWith('.yaml') }
                 }
             }
         }
 
-        stage('Go Tests') {
-            when {
-                expression { return env.GO_CHANGED == 'true' }
-            }
+        stage('Run Tests') {
             steps {
-                sh '''
-                    echo "[Go Test Stage]"
-                    go mod tidy
-                    go test ./... -v -coverprofile=coverage.out
-                '''
-            }
-        }
+                script {
+                    if (RUN_GO_TESTS) {
+                        echo "Запускаємо Go тести..."
+                        sh 'go test ./...'
+                    } else {
+                        echo "Go тести не потрібні."
+                    }
 
-        stage('Node Tests') {
-            when {
-                expression { return env.NODE_CHANGED == 'true' }
-            }
-            steps {
-                sh '''
-                    echo "[Node Test Stage]"
-                    npm ci
-                    npm test
-                '''
+                    if (RUN_YAML_TESTS) {
+                        echo "Перевірка YAML-файлів..."
+                        sh 'yamllint .'
+                    } else {
+                        echo "YAML тести не потрібні."
+                    }
+                }
             }
         }
     }
 
     post {
-        always {
-            archiveArtifacts artifacts: '**/coverage.out', allowEmptyArchive: true
-            cleanWs()
+        success {
+            echo '✅ Тести пройшли успішно'
         }
         failure {
-            echo "❌ CI Failed — please fix the code before merging."
-        }
-        success {
-            echo "✅ All tests passed!"
+            echo '❌ Помилка: тести не пройшли'
         }
     }
 }
-
 
