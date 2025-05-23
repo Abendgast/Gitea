@@ -1,10 +1,7 @@
 pipeline {
-    agent {
-        label 'gitea-build-agent'
-    }
+    agent { label 'gitea-build-agent' }
 
     environment {
-        GOPATH = "${WORKSPACE}/go"
         NODE_ENV = 'ci'
         PATH = "${WORKSPACE}/node_modules/.bin:${env.PATH}"
     }
@@ -19,41 +16,55 @@ pipeline {
         stage('Checkout') {
             steps {
                 cleanWs()
-                git url: 'https://github.com/Abendgast/Gitea.git', credentialsId: 'github-credentials', branch: 'main'
+                checkout([
+                    $class: 'GitSCM',
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/Abendgast/Gitea.git',
+                        credentialsId: 'github-credentials'
+                    ]],
+                    branches: [[name: '*/main']],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [[$class: 'CleanBeforeCheckout']]
+                ])
             }
         }
 
-        stage('Prepare Go') {
+        stage('Detect Changes') {
+            steps {
+                script {
+                    def changes = sh(
+                        script: 'git diff --name-only HEAD~1',
+                        returnStdout: true
+                    ).trim().split('\n')
+
+                    env.RUN_GO = changes.any { it.endsWith('.go') } ? 'true' : 'false'
+                    env.RUN_NODE = changes.any { it.endsWith('.js') || it.endsWith('.ts') || it.startsWith('package') } ? 'true' : 'false'
+                }
+            }
+        }
+
+        stage('Go Test') {
+            when {
+                expression { env.RUN_GO == 'true' }
+            }
             steps {
                 sh '''
-                    mkdir -p $GOPATH
                     go mod tidy
-                '''
-            }
-        }
-
-        stage('Build & Test Go') {
-            steps {
-                sh '''
                     go build ./...
                     go test ./... -v -coverprofile=coverage.out
                 '''
             }
         }
 
-        stage('Setup Node') {
+        stage('Node Test') {
+            when {
+                expression { env.RUN_NODE == 'true' }
+            }
             steps {
                 sh '''
                     rm -rf node_modules package-lock.json
                     npm ci
-                '''
-            }
-        }
-
-        stage('Lint & Test Node') {
-            steps {
-                sh '''
-                    npm run lint || true  # не падаємо на warning
+                    npm run lint || true
                     npm test
                 '''
             }
@@ -63,7 +74,6 @@ pipeline {
     post {
         always {
             archiveArtifacts artifacts: '**/coverage.out', allowEmptyArchive: true
-            junit '**/test-results/**/*.xml'
             cleanWs()
         }
         failure {
