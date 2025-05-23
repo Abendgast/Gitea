@@ -1,54 +1,62 @@
 pipeline {
     agent any
 
-    triggers {
-        githubPush()
-    }
-
-    tools {
-        go 'go-1.21'
-    }
-
     environment {
-        BUILD_TAGS = 'sqlite,sqlite_unlock_notify'
+        GO111MODULE = 'on'
+        NODE_ENV = 'test'
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Detect Changed Go Files') {
+            steps {
                 script {
-                    env.GIT_DIFF = sh(
-                        script: "git diff --name-only HEAD~1 HEAD | grep '\\.go$' || true",
+                    env.GO_CHANGED = sh(
+                        script: 'git diff --name-only HEAD~1 HEAD | grep \\.go$ || true',
                         returnStdout: true
                     ).trim()
                 }
             }
         }
 
-        stage('Go Vet & Test Changed') {
+        stage('Go: Dependencies & Tests') {
             when {
-                expression { return env.GIT_DIFF?.trim() }
+                expression { return env.GO_CHANGED }
             }
             steps {
-                script {
-                    echo "🧪 Змінені файли:"
-                    echo "${env.GIT_DIFF}"
-
-                    def changedPackages = sh(
-                        script: """
-                            echo "${env.GIT_DIFF}" | xargs -n1 dirname | sort | uniq
-                        """,
-                        returnStdout: true
-                    ).trim().split('\n').findAll { it }
-
-                    for (pkg in changedPackages) {
-                        echo "🔍 Перевірка пакету: ${pkg}"
-                        sh "go vet -tags='${BUILD_TAGS}' ${pkg} || echo '⚠️ go vet виявив проблеми'"
-                        sh "go test -tags='${BUILD_TAGS}' -short -timeout=60s ${pkg} || echo '❌ go test не пройшов'"
-                    }
+                dir('backend') {
+                    sh 'go mod tidy'
+                    sh 'go vet ./...'
+                    sh 'go test -v -cover ./...'
                 }
             }
+        }
+
+        stage('Node.js: Install & Lint & Test') {
+            steps {
+                dir('frontend') {
+                    sh 'npm ci'
+                    sh 'npm run lint'
+                    sh 'npm test -- --watchAll=false'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline complete.'
+        }
+        failure {
+            echo '❌ Build failed!'
+        }
+        success {
+            echo '✅ Build succeeded!'
         }
     }
 }
