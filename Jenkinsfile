@@ -49,6 +49,9 @@ pipeline {
         stage('Build') {
             steps {
                 sh '''
+                    # Збільшуємо heap для Node.js
+                    export NODE_OPTIONS="--max-old-space-size=4096"
+
                     # Очищення
                     make clean-all || make clean
 
@@ -56,14 +59,11 @@ pipeline {
                     go mod download
                     go mod tidy
 
-                    # Встановлення npm залежностей з правильними флагами
+                    # Встановлення npm залежностей
                     npm install --legacy-peer-deps --no-audit --no-fund
 
-                    # Генерація статичних ресурсів
-                    make generate
-
-                    # Збірка бінарного файлу
-                    make build
+                    # Збірка без frontend (тільки backend)
+                    TAGS="bindata" make build
                 '''
             }
         }
