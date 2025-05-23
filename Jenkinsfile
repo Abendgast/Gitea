@@ -6,7 +6,7 @@ pipeline {
     }
 
     environment {
-        REPO_URL = 'https://github.com/Abendgast/Gitea.git'
+        REPO_URL = 'https://github.com/your-username/your-repo.git'
         MAIN_BRANCH = 'main'
         DEV_BRANCH = 'dev'
     }
@@ -28,10 +28,27 @@ pipeline {
         stage('Build') {
             steps {
                 script {
-                    // Збірка Gitea проекту
-                    sh 'make clean'
-                    sh 'make deps'
-                    sh 'make build'
+                    // Встановлюємо та використовуємо правильну версію Node.js через nvm
+                    sh '''
+                        # Встановлюємо nvm якщо його немає
+                        if [ ! -s "$HOME/.nvm/nvm.sh" ]; then
+                            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+                        fi
+
+                        # Активуємо nvm та встановлюємо Node.js 18
+                        . $HOME/.nvm/nvm.sh
+                        nvm install 18
+                        nvm use 18
+
+                        # Перевіряємо версії
+                        node --version
+                        npm --version
+
+                        # Збірка Gitea
+                        make clean
+                        make deps
+                        make build
+                    '''
                 }
             }
         }
@@ -39,9 +56,13 @@ pipeline {
         stage('Test') {
             steps {
                 script {
-                    // Запускаємо тести Gitea
-                    sh 'make test'
-                    sh 'make test-sqlite'
+                    // Запускаємо тести Gitea з правильною версією Node.js
+                    sh '''
+                        . $HOME/.nvm/nvm.sh
+                        nvm use 18
+                        make test
+                        make test-sqlite
+                    '''
                 }
             }
         }
