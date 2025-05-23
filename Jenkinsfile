@@ -365,8 +365,15 @@ pipeline {
                             git config user.email "jenkins@yourcompany.com"
 
                             # Перевірка поточного стану
-                            echo "Поточна гілка: $(git branch --show-current)"
-                            echo "Останній commit: $(git log -1 --oneline)"
+                            echo "=== Поточний стан Git ==="
+                            echo "Поточна гілка: $(git branch --show-current || echo 'невідомо')"
+                            echo "Останній commit: $(git log -1 --oneline || echo 'немає коммітів')"
+                            echo "Всі локальні гілки:"
+                            git branch || echo "Помилка отримання списку локальних гілок"
+                            echo "Remote гілки:"
+                            git branch -r || echo "Помилка отримання remote гілок"
+                            echo "Remote URLs:"
+                            git remote -v || echo "Немає remote репозиторіїв"
                         '''
 
                         // Мердж з авторизацією та обробкою помилок
@@ -381,35 +388,72 @@ pipeline {
                                 echo "⚙️ Налаштування remote з авторизацією..."
                                 git remote set-url origin "https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Abendgast/Gitea.git"
 
-                                echo "📥 Отримання останніх змін з timeout..."
-                                timeout ${GIT_TIMEOUT}s git fetch origin main || {
-                                    echo "❌ Timeout або помилка при fetch origin main"
+                                echo "📥 Отримання всіх гілок з remote..."
+                                timeout ${GIT_TIMEOUT}s git fetch origin --all --prune || {
+                                    echo "❌ Timeout або помилка при fetch"
                                     exit 1
                                 }
 
-                                echo "🔄 Перехід на main гілку..."
-                                git checkout main
-                                git pull origin main
+                                # Показуємо що отримали
+                                echo "📋 Доступні remote гілки після fetch:"
+                                git branch -r
 
-                                echo "🔀 Мердж dev в main..."
-                                COMMIT_MSG=$(git log --oneline -1 origin/dev)
+                                echo "🔍 Пошук основної гілки (main/master)..."
+                                MAIN_BRANCH_NAME=""
+                                if git ls-remote --heads origin main | grep -q refs/heads/main; then
+                                    MAIN_BRANCH_NAME="main"
+                                    echo "✅ Знайдено remote гілку main"
+                                elif git ls-remote --heads origin master | grep -q refs/heads/master; then
+                                    MAIN_BRANCH_NAME="master"
+                                    echo "✅ Знайдено remote гілку master"
+                                else
+                                    echo "❌ Не знайдено основну гілку (main/master)!"
+                                    echo "Доступні remote гілки:"
+                                    git ls-remote --heads origin
+                                    exit 1
+                                fi
+
+                                echo "🔄 Робота з гілкою ${MAIN_BRANCH_NAME}..."
+
+                                # Перевіряємо чи існує локальна гілка
+                                if git show-ref --verify --quiet "refs/heads/${MAIN_BRANCH_NAME}"; then
+                                    echo "Локальна гілка ${MAIN_BRANCH_NAME} існує"
+                                    git checkout "${MAIN_BRANCH_NAME}"
+                                    git reset --hard "origin/${MAIN_BRANCH_NAME}"
+                                    echo "Гілка ${MAIN_BRANCH_NAME} оновлена до стану origin/${MAIN_BRANCH_NAME}"
+                                else
+                                    echo "Створюємо локальну гілку ${MAIN_BRANCH_NAME}"
+                                    git checkout -b "${MAIN_BRANCH_NAME}" "origin/${MAIN_BRANCH_NAME}"
+                                    echo "Гілка ${MAIN_BRANCH_NAME} створена з origin/${MAIN_BRANCH_NAME}"
+                                fi
+
+                                # Показуємо поточний стан
+                                echo "📍 Поточний стан після checkout:"
+                                echo "Гілка: $(git branch --show-current)"
+                                echo "Commit: $(git log -1 --oneline)"
+
+                                echo "🔀 Мердж dev в ${MAIN_BRANCH_NAME}..."
+                                COMMIT_MSG=$(git log --oneline -1 origin/dev | head -c 50)
                                 MERGE_MSG="🚀 Auto merge from dev branch via Jenkins CI
 
 ✅ Tests passed (strategy: ${TEST_STRATEGY})
-📝 Latest commit: $COMMIT_MSG
+📝 Latest commit: ${COMMIT_MSG}...
 🔧 Files changed: ${TOTAL_FILES_COUNT} (${GO_FILES_COUNT} Go, ${JS_FILES_COUNT} JS, ${CONFIG_FILES_COUNT} Config)
 🕐 Merged at: $(date)
 🤖 Jenkins build: ${BUILD_NUMBER}"
 
-                                git merge origin/dev --no-ff -m "$MERGE_MSG"
+                                git merge "origin/dev" --no-ff -m "${MERGE_MSG}"
 
-                                echo "📤 Відправка змін..."
-                                timeout ${GIT_TIMEOUT}s git push origin main || {
+                                echo "📤 Відправка змін в ${MAIN_BRANCH_NAME}..."
+                                timeout ${GIT_TIMEOUT}s git push origin "${MAIN_BRANCH_NAME}" || {
                                     echo "❌ Timeout або помилка при push"
                                     exit 1
                                 }
 
                                 echo "✅ Мердж успішно завершено!"
+                                echo "📊 Результат:"
+                                echo "Гілка: $(git branch --show-current)"
+                                echo "Останній commit: $(git log -1 --oneline)"
                             '''
                         }
                     }
