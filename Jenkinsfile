@@ -2,42 +2,96 @@ pipeline {
     agent any
 
     triggers {
-        githubPush()  // автоматично тригерить при пуші
+        githubPush()
     }
 
     environment {
-        GO111MODULE = 'on'
+        REPO_URL = 'https://github.com/Abendgast/Gitea.git'
+        MAIN_BRANCH = 'main'
+        DEV_BRANCH = 'dev'
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+                script {
+                    // Перевіряємо, що це коміт в dev гілку
+                    if (env.BRANCH_NAME != 'dev') {
+                        currentBuild.result = 'ABORTED'
+                        error("Pipeline запускається тільки для dev гілки")
+                    }
+                }
             }
         }
 
         stage('Build') {
             steps {
-                echo "🏗️ Building..."
-                sh 'go build -v ./...'
+                script {
+                    // Збірка Gitea проекту
+                    sh 'make clean'
+                    sh 'make deps'
+                    sh 'make build'
+                }
             }
         }
 
         stage('Test') {
             steps {
-                echo "🧪 Running tests..."
-                sh 'go test -v ./...'
+                script {
+                    // Запускаємо тести Gitea
+                    sh 'make test'
+                    sh 'make test-sqlite'
+                }
+            }
+        }
+
+        stage('Merge to Main') {
+            when {
+                branch 'dev'
+            }
+            steps {
+                script {
+                    // Налаштовуємо git
+                    sh '''
+                        git config user.name "Jenkins CI"
+                        git config user.email "jenkins@yourcompany.com"
+                    '''
+
+                    // Отримуємо останні зміни з remote
+                    sh 'git fetch origin'
+
+                    // Переключаємося на main гілку
+                    sh 'git checkout main'
+                    sh 'git pull origin main'
+
+                    // Мержимо dev в main
+                    sh 'git merge origin/dev --no-ff -m "Auto merge from dev branch via Jenkins CI"'
+
+                    // Пушимо зміни в main
+                    withCredentials([usernamePassword(credentialsId: 'github-credentials',
+                                                    usernameVariable: 'GIT_USERNAME',
+                                                    passwordVariable: 'GIT_PASSWORD')]) {
+                        sh '''
+                            git remote set-url origin https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/your-username/your-repo.git
+                            git push origin main
+                        '''
+                    }
+                }
             }
         }
     }
 
     post {
         success {
-            echo "✅ Pipeline finished successfully!"
+            echo 'Pipeline виконано успішно! Зміни змержено в main гілку.'
         }
         failure {
-            echo "❌ Pipeline failed!"
+            echo 'Pipeline завершився з помилкою. Зміни не були змержено в main.'
+        }
+        always {
+            // Очищуємо workspace
+            cleanWs()
         }
     }
 }
-
