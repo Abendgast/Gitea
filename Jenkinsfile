@@ -1,80 +1,55 @@
 pipeline {
-    agent { label 'gitea-build-agent' }
+    agent any
 
     environment {
-        NODE_ENV = 'ci'
-        PATH = "${WORKSPACE}/node_modules/.bin:${env.PATH}"
+        GO111MODULE = 'on'
+        NODE_ENV = 'test'
     }
 
     options {
-        skipDefaultCheckout(true)
         timestamps()
+        skipDefaultCheckout()
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 cleanWs()
-                checkout([
-                    $class: 'GitSCM',
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/Abendgast/Gitea.git',
-                        credentialsId: 'github-credentials'
-                    ]],
-                    branches: [[name: '*/main']],
-                    doGenerateSubmoduleConfigurations: false,
-                    extensions: [[$class: 'CleanBeforeCheckout']]
-                ])
+                checkout scm
             }
         }
 
-
         stage('Detect Changes') {
-    steps {
-        script {
-            sh 'git fetch --depth=2 origin main'  // гарантовано мати два коміти
-            def changes = sh(
-                script: 'git diff --name-only origin/main~1 origin/main',
-                returnStdout: true
-            ).trim().split('\n')
-
-            env.RUN_GO = changes.any { it.endsWith('.go') } ? 'true' : 'false'
-            env.RUN_NODE = changes.any { it.endsWith('.js') || it.endsWith('.ts') || it.startsWith('package') } ? 'true' : 'false'
-
-            echo "RUN_GO = ${env.RUN_GO}"
-            echo "RUN_NODE = ${env.RUN_NODE}"
+            steps {
+                script {
+                    def changedFiles = sh(script: "git diff --name-only origin/main", returnStdout: true).trim().split("\n")
+                    env.GO_CHANGED = changedFiles.any { it.endsWith(".go") || it.startsWith("go/") }.toString()
+                    env.NODE_CHANGED = changedFiles.any { it.endsWith(".js") || it.endsWith(".ts") || it.startsWith("frontend/") }.toString()
+                }
+            }
         }
-    }
-}
 
-
-
-
-
-
-        stage('Go Test') {
+        stage('Go Tests') {
             when {
-                expression { env.RUN_GO == 'true' }
+                expression { return env.GO_CHANGED == 'true' }
             }
             steps {
                 sh '''
+                    echo "[Go Test Stage]"
                     go mod tidy
-                    go build ./...
                     go test ./... -v -coverprofile=coverage.out
                 '''
             }
         }
 
-        stage('Node Test') {
+        stage('Node Tests') {
             when {
-                expression { env.RUN_NODE == 'true' }
+                expression { return env.NODE_CHANGED == 'true' }
             }
             steps {
                 sh '''
-                    rm -rf node_modules package-lock.json
+                    echo "[Node Test Stage]"
                     npm ci
-                    npm run lint || true
                     npm test
                 '''
             }
@@ -87,10 +62,10 @@ pipeline {
             cleanWs()
         }
         failure {
-            echo '❌ Build failed.'
+            echo "❌ CI Failed — please fix the code before merging."
         }
         success {
-            echo '✅ Build succeeded!'
+            echo "✅ All tests passed!"
         }
     }
 }
