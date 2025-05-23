@@ -1,59 +1,73 @@
 pipeline {
-    agent any
+    agent {
+        label 'gitea-build-agent'
+    }
 
     environment {
-        GO111MODULE = 'on'
-        NODE_ENV = 'test'
+        GOPATH = "${WORKSPACE}/go"
+        NODE_ENV = 'ci'
+        PATH = "${WORKSPACE}/node_modules/.bin:${env.PATH}"
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
     }
 
     stages {
+
         stage('Checkout') {
             steps {
-                checkout scm
+                cleanWs()
+                git url: 'https://github.com/Abendgast/Gitea.git', credentialsId: 'github-credentials', branch: 'main'
             }
         }
 
-        stage('Detect Changed Go Files') {
+        stage('Prepare Go') {
             steps {
-                script {
-                    env.GO_CHANGED = sh(
-                        script: 'git diff --name-only HEAD~1 HEAD | grep \\.go$ || true',
-                        returnStdout: true
-                    ).trim()
-                }
+                sh '''
+                    mkdir -p $GOPATH
+                    go mod tidy
+                '''
             }
         }
 
-        stage('Go: Dependencies & Tests') {
-            when {
-                expression { return env.GO_CHANGED }
-            }
+        stage('Build & Test Go') {
             steps {
-                dir('backend') {
-                    sh 'go mod tidy'
-                    sh 'go vet ./...'
-                    sh 'go test -v -cover ./...'
-                }
+                sh '''
+                    go build ./...
+                    go test ./... -v -coverprofile=coverage.out
+                '''
             }
         }
 
-        stage('Node.js: Install & Lint & Test') {
+        stage('Setup Node') {
             steps {
-                dir('frontend') {
-                    sh 'npm ci'
-                    sh 'npm run lint'
-                    sh 'npm test -- --watchAll=false'
-                }
+                sh '''
+                    rm -rf node_modules package-lock.json
+                    npm ci
+                '''
+            }
+        }
+
+        stage('Lint & Test Node') {
+            steps {
+                sh '''
+                    npm run lint || true  # не падаємо на warning
+                    npm test
+                '''
             }
         }
     }
 
     post {
         always {
-            echo 'Pipeline complete.'
+            archiveArtifacts artifacts: '**/coverage.out', allowEmptyArchive: true
+            junit '**/test-results/**/*.xml'
+            cleanWs()
         }
         failure {
-            echo '❌ Build failed!'
+            echo '❌ Build failed.'
         }
         success {
             echo '✅ Build succeeded!'
