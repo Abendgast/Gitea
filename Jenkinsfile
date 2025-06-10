@@ -1,34 +1,28 @@
 pipeline {
     agent any
 
-    // Тригери - запуск тільки при пушів dev гілку
     triggers {
         githubPush()
     }
 
-    // Змінні середовища
     environment {
         REPO_URL = 'https://github.com/Abendgast/Gitea.git'
         MAIN_BRANCH = 'main'
         DEV_BRANCH = 'dev'
         NODE_VERSION = '20'
         NODE_OPTIONS = '--max-old-space-size=4096'
-        // Таймаути для git операцій
-        GIT_TIMEOUT = '300' // 5 хвилин
+        GIT_TIMEOUT = '300' 
     }
 
-    // Інструменти які нам потрібні
     tools {
         nodejs "${NODE_VERSION}"
         go 'go-1.21'
     }
 
     stages {
-        // Перевірка гілки та checkout коду
         stage('Checkout and Validate') {
             steps {
                 script {
-                    // Перевіряємо що ми працюємо з dev гілкою
                     if (env.BRANCH_NAME != 'dev') {
                         currentBuild.result = 'ABORTED'
                         error("Pipeline запускається тільки для dev гілки. Поточна гілка: ${env.BRANCH_NAME}")
@@ -37,7 +31,6 @@ pipeline {
                     echo "✓ Працюємо з dev гілкою: ${env.BRANCH_NAME}"
                     echo "✓ Код успішно завантажено"
 
-                    // Отримуємо інформацію про поточний коммit
                     def commitInfo = sh(
                         script: 'git log -1 --pretty=format:"%h - %s (%an, %ad)" --date=short',
                         returnStdout: true
@@ -47,13 +40,11 @@ pipeline {
             }
         }
 
-        // Швидкий аналіз змін на основі останніх коммітів
         stage('Quick Change Analysis') {
             steps {
                 script {
                     echo "=== Швидкий аналіз змін ==="
 
-                    // Отримуємо зміни з останнього коммиту
                     def changedFiles = sh(
                         script: 'git diff --name-only HEAD~1 HEAD',
                         returnStdout: true
@@ -70,17 +61,14 @@ pipeline {
                     echo "📂 Змінені файли:"
                     echo changedFiles
 
-                    // Збереження у файл для подальшого використання
                     writeFile file: 'changed_files.txt', text: changedFiles
 
-                    // Аналіз типів файлів - переконуємося що changedFiles не null
                     def filesList = changedFiles ? changedFiles.split('\n') : []
                     def goFiles = filesList.findAll { it && it.endsWith('.go') }
                     def jsFiles = filesList.findAll { it && it.matches('.*\\.(js|ts|vue)$') }
                     def configFiles = filesList.findAll { it && it.matches('.*\\.(yml|yaml|json|toml|env)$') }
                     def dockerFiles = filesList.findAll { it && it.matches('.*(Dockerfile|docker-compose).*') }
 
-                    // Збереження результатів аналізу
                     writeFile file: 'changed_go_files.txt', text: goFiles.join('\n')
                     writeFile file: 'changed_js_files.txt', text: jsFiles.join('\n')
                     writeFile file: 'changed_config_files.txt', text: configFiles.join('\n')
@@ -92,20 +80,17 @@ pipeline {
                     echo "   Config файлів: ${configFiles.size()}"
                     echo "   Docker файлів: ${dockerFiles.size()}"
 
-                    // Зберігаємо статистику у environment змінні
                     env.GO_FILES_COUNT = goFiles.size().toString()
                     env.JS_FILES_COUNT = jsFiles.size().toString()
                     env.CONFIG_FILES_COUNT = configFiles.size().toString()
                     env.DOCKER_FILES_COUNT = dockerFiles.size().toString()
                     env.TOTAL_FILES_COUNT = filesList.size().toString()
 
-                    // Зберігаємо changedFiles як environment змінну для використання в інших stages
                     env.CHANGED_FILES_LIST = changedFiles
                 }
             }
         }
 
-        // Розумна стратегія тестування
         stage('Smart Testing Strategy') {
             steps {
                 script {
@@ -123,12 +108,10 @@ pipeline {
                     echo "   Go файлів: ${goCount}"
                     echo "   Config файлів: ${configCount}"
 
-                    // Якщо змін немає або тільки README/docs
                     if (totalCount == 0) {
                         skipTests = true
                         echo "ℹ️ Немає змін - пропускаємо тести"
                     } else {
-                        // Використовуємо environment змінну замість локальної
                         def changedFilesFromEnv = env.CHANGED_FILES_LIST ?: ''
                         def onlyDocs = false
 
@@ -148,7 +131,6 @@ pipeline {
                     if (!skipTests) {
                         def changedFilesContent = env.CHANGED_FILES_LIST ?: ''
 
-                        // Стратегія на основі змін
                         if (changedFilesContent.contains('main.go') || configCount > 0 || dockerCount > 0) {
                             testStrategy = 'core'
                             echo "🔥 Core зміни виявлено - core тестування"
@@ -172,7 +154,6 @@ pipeline {
             }
         }
 
-        // Налаштування середовища
         stage('Environment Setup') {
             when {
                 expression { env.SKIP_TESTS != 'true' }
@@ -191,7 +172,6 @@ pipeline {
             }
         }
 
-        // Встановлення залежностей
         stage('Install Dependencies') {
             when {
                 expression { env.SKIP_TESTS != 'true' }
@@ -233,7 +213,6 @@ pipeline {
             }
         }
 
-        // Розумне тестування
         stage('Smart Tests Execution') {
             when {
                 expression { env.SKIP_TESTS != 'true' }
@@ -306,7 +285,6 @@ pipeline {
                             script {
                                 echo "=== Frontend тести та перевірка якості ==="
 
-                                // Перевіряємо чи є тести в package.json
                                 def hasTests = false
                                 try {
                                     hasTests = sh(script: 'grep -q "\\"test\\"" package.json', returnStatus: true) == 0
@@ -314,7 +292,6 @@ pipeline {
                                     hasTests = false
                                 }
 
-                                // Перевіряємо чи є ESLint
                                 def hasEslint = false
                                 try {
                                     hasEslint = sh(script: 'grep -q "eslint" package.json', returnStatus: true) == 0
@@ -324,7 +301,6 @@ pipeline {
 
                                 def frontendErrors = []
 
-                                // Запускаємо тести якщо є
                                 if (hasTests) {
                                     echo "🧪 Запуск frontend тестів..."
                                     def testResult = sh(
@@ -345,11 +321,9 @@ pipeline {
                                     echo "📝 Тести не налаштовані в package.json"
                                 }
 
-                                // Запускаємо ESLint якщо є
                                 if (hasEslint) {
                                     echo "🔍 Запуск ESLint..."
 
-                                    // Перевіряємо змінені JS/TS файли
                                     if (fileExists('changed_js_files.txt')) {
                                         def changedJsFiles = readFile('changed_js_files.txt').trim()
                                         if (changedJsFiles) {
@@ -373,7 +347,6 @@ pipeline {
                                     echo "📝 ESLint не налаштований"
                                 }
 
-                                // Базова перевірка JS/TS файлів на синтаксис
                                 if (fileExists('changed_js_files.txt')) {
                                     def changedJsFiles = readFile('changed_js_files.txt').trim()
                                     if (changedJsFiles) {
@@ -383,7 +356,6 @@ pipeline {
 
                                         for (jsFile in jsFilesList) {
                                             if (jsFile.trim() && fileExists(jsFile.trim())) {
-                                                // Перевірка базового синтаксису за допомогою node
                                                 def syntaxCheck = sh(
                                                     script: "node --check '${jsFile}' 2>&1 || true",
                                                     returnStdout: true
@@ -393,7 +365,6 @@ pipeline {
                                                     frontendErrors.add("❌ Синтаксична помилка в ${jsFile}:\n${syntaxCheck}")
                                                 }
 
-                                                // Перевірка на забороненні конструкції
                                                 def fileContent = readFile(jsFile)
                                                 def issues = []
 
@@ -417,7 +388,6 @@ pipeline {
                                     }
                                 }
 
-                                // Підсумок
                                 if (frontendErrors) {
                                     echo "\n" + "="*50
                                     echo "❌ FRONTEND ПЕРЕВІРКА ПРОВАЛЕНА!"
@@ -451,7 +421,6 @@ pipeline {
                                 def qualityCheckFailed = false
                                 def errorMessages = []
 
-                                // Перевіряємо Go файли
                                 if (fileExists('changed_go_files.txt')) {
                                     def changedGoFiles = readFile('changed_go_files.txt').trim()
                                     if (changedGoFiles) {
@@ -463,7 +432,6 @@ pipeline {
                                             if (goFile.trim() && fileExists(goFile.trim())) {
                                                 echo "📄 Перевірка файлу: ${goFile}"
 
-                                                // 1. Перевірка синтаксису
                                                 def syntaxCheck = sh(
                                                     script: "gofmt -e '${goFile}' > /dev/null 2>&1",
                                                     returnStatus: true
@@ -479,7 +447,6 @@ pipeline {
                                                     continue
                                                 }
 
-                                                // 2. Перевірка форматування
                                                 def formatCheck = sh(
                                                     script: "gofmt -l '${goFile}'",
                                                     returnStdout: true
@@ -487,7 +454,6 @@ pipeline {
 
                                                 if (formatCheck) {
                                                     errorMessages.add("⚠️ Файл ${goFile} не відформатований згідно з gofmt")
-                                                    // Показуємо різницю
                                                     def formatDiff = sh(
                                                         script: "gofmt -d '${goFile}' 2>/dev/null || echo 'Не вдалося показати різницю'",
                                                         returnStdout: true
@@ -498,21 +464,17 @@ pipeline {
                                                     qualityCheckFailed = true
                                                 }
 
-                                                // 3. Базова перевірка на забороненні конструкції
                                                 def fileContent = readFile(goFile)
                                                 def issues = []
 
-                                                // Перевірка на panic без recover
                                                 if (fileContent.contains('panic(') && !fileContent.contains('recover()')) {
                                                     issues.add("Використання panic() без recover()")
                                                 }
 
-                                                // Перевірка на TODO/FIXME
                                                 if (fileContent.contains('TODO') || fileContent.contains('FIXME')) {
                                                     issues.add("Знайдено TODO/FIXME коментарі")
                                                 }
 
-                                                // Перевірка на fmt.Print* в продакшн коді (окрім main.go та _test.go)
                                                 if (!goFile.contains('main.go') && !goFile.contains('_test.go')) {
                                                     if (fileContent.contains('fmt.Print')) {
                                                         issues.add("Використання fmt.Print* в продакшн коді")
@@ -529,7 +491,6 @@ pipeline {
                                             }
                                         }
 
-                                        // 4. Запуск go vet для статичного аналізу
                                         echo "🔬 Запуск go vet для статичного аналізу..."
                                         def vetResult = sh(
                                             script: '''
@@ -539,7 +500,6 @@ pipeline {
                                         ).trim()
 
                                         if (vetResult && !vetResult.contains('no Go files')) {
-                                            // Фільтруємо результати vet, показуємо тільки для змінених файлів
                                             def vetErrors = vetResult.split('\n').findAll { line ->
                                                 goFilesList.any { goFile -> line.contains(goFile) }
                                             }
@@ -557,7 +517,6 @@ pipeline {
                                     echo "📝 Файл changed_go_files.txt не знайдено"
                                 }
 
-                                // Підсумок перевірки
                                 if (qualityCheckFailed) {
                                     echo "\n" + "="*50
                                     echo "❌ ПЕРЕВІРКА ЯКОСТІ КОДУ ПРОВАЛЕНА!"
@@ -572,7 +531,6 @@ pipeline {
                                     echo "3. Виправте всі синтаксичні помилки"
                                     echo "4. Уберіть debug код та TODO коментарі\n"
 
-                                    // Встановлюємо статус як нестабільний
                                     currentBuild.result = 'UNSTABLE'
                                     error("❌ Код не пройшов перевірку якості. Див. деталі вище.")
                                 } else {
@@ -585,13 +543,11 @@ pipeline {
             }
         }
 
-        // Безпечний мердж тільки після успішних тестів
         stage('Safe Merge to Main') {
             when {
                 allOf {
                     branch 'dev'
                     expression {
-                        // Перевіряємо що білд успішний (не unstable через проблеми якості)
                         return currentBuild.currentResult == 'SUCCESS'
                     }
                 }
@@ -618,7 +574,6 @@ pipeline {
                             git remote -v || echo "Немає remote репозиторіїв"
                         '''
 
-                        // Мердж з авторизацією та обробкою помилок
                         withCredentials([usernamePassword(
                             credentialsId: 'github-credentials',
                             usernameVariable: 'GIT_USERNAME',
@@ -710,7 +665,6 @@ pipeline {
         }
     }
 
-    // Пост-дії
     post {
         success {
             script {
@@ -751,14 +705,12 @@ pipeline {
             script {
                 echo "🧹 Очищення та архівування..."
 
-                // Архівуємо результати аналізу
                 try {
                     archiveArtifacts artifacts: 'changed_*.txt', allowEmptyArchive: true, fingerprint: true
                 } catch (Exception e) {
                     echo "⚠️ Помилка архівування: ${e.message}"
                 }
 
-                // Очищення робочого простору
                 cleanWs(
                     cleanWhenAborted: true,
                     cleanWhenFailure: true,
