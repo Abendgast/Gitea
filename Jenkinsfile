@@ -1,19 +1,18 @@
 pipeline {
     agent any
 
-    environment {
-        DOCKER_REGISTRY = '123456789012.dkr.ecr.us-east-1.amazonaws.com' // Замініть на ваш ECR URI
-        IMAGE_NAME = 'gitea-app'
-        AWS_REGION = 'us-east-1'
-        AWS_CREDENTIALS = 'aws-ecr-credentials'
-    }
-
     parameters {
         booleanParam(
             name: 'PUSH_TO_ECR',
             defaultValue: false,
-            description: 'Push Docker image to ECR?'
+            description: 'Push image to ECR repository'
         )
+    }
+
+    environment {
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        IMAGE_NAME = 'gitea-app'
+        AWS_REGION = 'us-east-1'
     }
 
     stages {
@@ -26,15 +25,19 @@ pipeline {
         stage('Build Info') {
             steps {
                 script {
-                    env.BUILD_VERSION = sh(
-                        script: "echo '${env.BRANCH_NAME}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(8)}'",
-                        returnStdout: true
-                    ).trim()
+                    def gitCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    def gitBranch = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+                    def buildDate = sh(returnStdout: true, script: 'date +%Y%m%d-%H%M%S').trim()
 
-                    env.IMAGE_TAG = env.BRANCH_NAME == 'main' ? 'latest' : env.BUILD_VERSION
+                    if (gitBranch == 'main' || gitBranch == 'master') {
+                        env.IMAGE_TAG = "prod-${buildDate}-${gitCommit}"
+                        env.BUILD_TYPE = "production"
+                    } else {
+                        env.IMAGE_TAG = "dev-${env.BUILD_NUMBER}-${buildDate}-${gitCommit}"
+                        env.BUILD_TYPE = "development"
+                    }
 
-                    echo "Building version: ${env.BUILD_VERSION}"
-                    echo "Image tag: ${env.IMAGE_TAG}"
+                    echo "Building ${env.BUILD_TYPE} image with tag: ${env.IMAGE_TAG}"
                 }
             }
         }
@@ -42,73 +45,40 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Білд основного Gitea образу
                     sh """
-                        docker build -t ${IMAGE_NAME}:${BUILD_VERSION} ./gitea/
-                        docker tag ${IMAGE_NAME}:${BUILD_VERSION} ${IMAGE_NAME}:${IMAGE_TAG}
+                        cd gitea
+                        docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
+                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.IMAGE_NAME}:latest
                     """
-
-                    echo "Built image: ${IMAGE_NAME}:${BUILD_VERSION}"
-                    echo "Tagged as: ${IMAGE_NAME}:${IMAGE_TAG}"
                 }
             }
         }
 
-        stage('Test Local Build') {
+        stage('Test Image') {
             steps {
                 script {
-                    // Тестуємо білд локально
-                    sh """
-                        # Перевіряємо чи образ створився
-                        docker images | grep ${IMAGE_NAME}
-
-                        # Можемо запустити базові тести
-                        docker run --rm ${IMAGE_NAME}:${BUILD_VERSION} /app/gitea/gitea --version || true
-                    """
+                    sh "docker run --rm ${env.IMAGE_NAME}:${env.IMAGE_TAG} /app/gitea/gitea --version"
                 }
             }
         }
 
         stage('Push to ECR') {
             when {
-                expression { params.PUSH_TO_ECR == true }
+                params.PUSH_TO_ECR == true
             }
             steps {
                 script {
-                    withAWS(credentials: AWS_CREDENTIALS, region: AWS_REGION) {
-                        // Логінимось в ECR
-                        sh """
-                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_REGISTRY}
-                        """
-
-                        // Тегуємо для ECR
-                        sh """
-                            docker tag ${IMAGE_NAME}:${BUILD_VERSION} ${DOCKER_REGISTRY}/${IMAGE_NAME}:${BUILD_VERSION}
-                            docker tag ${IMAGE_NAME}:${BUILD_VERSION} ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                        """
-
-                        // Пушимо в ECR
-                        sh """
-                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${BUILD_VERSION}
-                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                        """
-
-                        echo "Pushed to ECR: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${BUILD_VERSION}"
-                        echo "Pushed to ECR: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-                    }
-                }
-            }
-        }
-
-        stage('Cleanup') {
-            steps {
-                script {
-                    // Очищуємо локальні образи щоб не засмічувати диск
                     sh """
-                        docker rmi ${IMAGE_NAME}:${BUILD_VERSION} || true
-                        docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
-                        docker rmi ${DOCKER_REGISTRY}/${IMAGE_NAME}:${BUILD_VERSION} || true
-                        docker rmi ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} || true
+                        # Tag for ECR
+                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG}
+                        docker tag ${env.IMAGE_NAME}:latest ${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:latest
+
+                        # Login to ECR
+                        aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_REGISTRY}
+
+                        # Push images
+                        docker push ${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG}
+                        docker push ${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:latest
                     """
                 }
             }
@@ -117,15 +87,18 @@ pipeline {
 
     post {
         always {
-            // Очищуємо workspace
-            cleanWs()
+            script {
+                sh """
+                    docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
+                    docker rmi ${env.DOCKER_REGISTRY}/${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
+                """
+            }
         }
         success {
-            echo "Pipeline completed successfully!"
-            echo "Image version: ${env.BUILD_VERSION}"
+            echo "Build completed successfully! Image tag: ${env.IMAGE_TAG}"
         }
         failure {
-            echo "Pipeline failed!"
+            echo "Build failed!"
         }
     }
 }
