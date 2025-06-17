@@ -64,7 +64,9 @@ pipeline {
 
         stage('Push to ECR') {
             when {
-                params.PUSH_TO_ECR == true
+                expression {
+                    return params.PUSH_TO_ECR
+                }
             }
             steps {
                 script {
