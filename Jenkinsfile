@@ -17,7 +17,7 @@ pipeline {
     }
 
     environment {
-        DOCKER_REGISTRY = '742969552349.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
         IMAGE_NAME = 'gitea-app'
         AWS_REGION = 'us-east-1'
     }
