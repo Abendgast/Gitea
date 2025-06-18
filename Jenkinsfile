@@ -17,7 +17,7 @@ pipeline {
     }
 
     environment {
-        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        DOCKER_REGISTRY = '742969552349.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
         IMAGE_NAME = 'gitea-app'
         AWS_REGION = 'us-east-1'
     }
@@ -132,19 +132,19 @@ pipeline {
         success {
             script {
                 if (params.PUSH_TO_ECR) {
-                    echo "✅ Build and push completed successfully!"
-                    echo "📦 Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                    echo "🔖 Tag: ${env.IMAGE_TAG}"
-                    echo "🏗️ Build Type: ${env.BUILD_TYPE}"
+                    echo "Build and push completed successfully!"
+                    echo "Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    echo "Tag: ${env.IMAGE_TAG}"
+                    echo "Build Type: ${env.BUILD_TYPE}"
                 } else {
-                    echo "✅ Build completed successfully!"
-                    echo "🔖 Image tag: ${env.IMAGE_TAG}"
-                    echo "ℹ️ Image not pushed to ECR (PUSH_TO_ECR=false)"
+                    echo "Build completed successfully!"
+                    echo "Image tag: ${env.IMAGE_TAG}"
+                    echo "Image not pushed to ECR (PUSH_TO_ECR=false)"
                 }
             }
         }
         failure {
-            echo "❌ Build failed! Check logs for details."
+            echo "Build failed! Check logs for details."
         }
     }
 }
