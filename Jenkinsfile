@@ -1,55 +1,61 @@
 pipeline {
-    agent {
-        label 'docker-agent'
+    agent any
+
+    environment {
+        // Docker registry налаштування
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        IMAGE_NAME = 'gitea-app'
+        AWS_REGION = 'us-east-1'
+
+        // Versioning strategy
+        BUILD_TIMESTAMP = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
+        GIT_SHORT_COMMIT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+        DEVELOPER_NAME = 'jenkins'
     }
 
     parameters {
         booleanParam(
             name: 'PUSH_TO_ECR',
             defaultValue: false,
-            description: 'Push image to ECR repository'
+            description: 'Push image to AWS ECR?'
         )
-        string(
-            name: 'USER_NAME',
-            defaultValue: 'jenkins',
-            description: 'User name to include in dev tags'
+        choice(
+            name: 'BUILD_TYPE',
+            choices: ['dev', 'staging', 'production'],
+            description: 'Build type for tagging strategy'
         )
     }
 
-    environment {
-        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
-        IMAGE_NAME = 'gitea-app'
-        AWS_REGION = 'us-east-1'
+    options {
+        timestamps()
+        skipDefaultCheckout()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     stages {
         stage('Checkout') {
             steps {
+                cleanWs()
                 checkout scm
+                script {
+                    // Додаткові змінні для версіонування
+                    env.BRANCH_NAME = sh(script: "git rev-parse --abbrev-ref HEAD", returnStdout: true).trim()
+                    env.BUILD_VERSION = generateBuildVersion()
+                }
             }
         }
 
-        stage('Build Info') {
+        stage('Detect Changes') {
             steps {
                 script {
-                    def gitCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    def gitBranch = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
-                    def buildDate = sh(returnStdout: true, script: 'date +%Y%m%d-%H%M%S').trim()
-                    def userName = params.USER_NAME ?: 'jenkins'
+                    // Перевіряємо чи є зміни в коді (якщо потрібно)
+                    def changedFiles = sh(
+                        script: "git diff --name-only HEAD~1 2>/dev/null || echo 'all'",
+                        returnStdout: true
+                    ).trim()
 
-                    if (gitBranch == 'main' || gitBranch == 'master') {
-                        env.IMAGE_TAG = "prod-${buildDate}-${gitCommit}"
-                        env.BUILD_TYPE = "production"
-                    } else {
-                        env.IMAGE_TAG = "dev-${userName}-${env.BUILD_NUMBER}-${buildDate}-${gitCommit}"
-                        env.BUILD_TYPE = "development"
-                    }
-
-                    echo "Building ${env.BUILD_TYPE} image with tag: ${env.IMAGE_TAG}"
-                    echo "Branch: ${gitBranch}"
-                    echo "Commit: ${gitCommit}"
-                    echo "Build Date: ${buildDate}"
-                    echo "User: ${userName}"
+                    env.DOCKERFILE_CHANGED = changedFiles.contains('Dockerfile') || changedFiles.contains('all')
+                    echo "Changed files: ${changedFiles}"
                 }
             }
         }
@@ -57,22 +63,53 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
+                    echo "🏗️ Building Docker image with version: ${env.BUILD_VERSION}"
+
+                    // Білд основного образу
                     sh """
-                        cd gitea
-                        docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
-                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.IMAGE_NAME}:latest
+                        docker build -t ${IMAGE_NAME}:${env.BUILD_VERSION} .
+                        docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${IMAGE_NAME}:latest
                     """
+
+                    // Додаткові теги залежно від типу білда
+                    if (params.BUILD_TYPE == 'production') {
+                        sh "docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${IMAGE_NAME}:production"
+                        sh "docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${IMAGE_NAME}:stable"
+                    } else if (params.BUILD_TYPE == 'staging') {
+                        sh "docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${IMAGE_NAME}:staging"
+                    }
+
+                    // Показуємо створені образи
+                    sh "docker images ${IMAGE_NAME}"
                 }
             }
         }
 
-        stage('Test Image') {
+        stage('Test Docker Image') {
             steps {
                 script {
+                    echo "🧪 Testing Docker image..."
+
+                    // Базовий тест - перевіряємо чи запускається контейнер
                     sh """
-                        echo "Testing Gitea version..."
-                        docker run --rm ${env.IMAGE_NAME}:${env.IMAGE_TAG} /app/gitea/gitea --version
-                        echo "Image test completed successfully"
+                        # Запускаємо контейнер в детач режимі
+                        CONTAINER_ID=\$(docker run -d --name test-${BUILD_NUMBER} ${IMAGE_NAME}:${env.BUILD_VERSION})
+
+                        # Чекаємо 10 секунд
+                        sleep 10
+
+                        # Перевіряємо чи контейнер працює
+                        if docker ps | grep \$CONTAINER_ID; then
+                            echo "✅ Container is running successfully"
+                        else
+                            echo "❌ Container failed to start"
+                            docker logs \$CONTAINER_ID
+                            exit 1
+                        fi
+
+                        # Очищуємо тестовий контейнер
+                        docker stop \$CONTAINER_ID || true
+                        docker rm \$CONTAINER_ID || true
                     """
                 }
             }
@@ -80,34 +117,51 @@ pipeline {
 
         stage('Push to ECR') {
             when {
-                expression {
-                    return params.PUSH_TO_ECR
-                }
+                expression { return params.PUSH_TO_ECR }
             }
             steps {
                 script {
+                    echo "🚀 Pushing to AWS ECR..."
+
                     sh """
-                        echo "Preparing to push to ECR..."
+                        # Логінимося в ECR
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${DOCKER_REGISTRY}
 
-                        # Tag for ECR
-                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
+                        # Тегуємо для ECR
+                        docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_VERSION}
+                        docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
 
-                        # Only tag latest for production builds
-                        if [ "${env.BUILD_TYPE}" = "production" ]; then
-                            docker tag ${env.IMAGE_NAME}:latest ${env.DOCKER_REGISTRY}:latest
-                        fi
+                        # Пушимо образи
+                        docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_VERSION}
+                        docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
+                    """
 
-                        # Login to ECR
-                        aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${env.DOCKER_REGISTRY}
+                    // Додаткові теги для ECR
+                    if (params.BUILD_TYPE == 'production') {
+                        sh """
+                            docker tag ${IMAGE_NAME}:${env.BUILD_VERSION} ${DOCKER_REGISTRY}/${IMAGE_NAME}:production
+                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:production
+                        """
+                    }
 
-                        # Push images
-                        docker push ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
+                    echo "✅ Successfully pushed to ECR: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_VERSION}"
+                }
+            }
+        }
 
-                        if [ "${env.BUILD_TYPE}" = "production" ]; then
-                            docker push ${env.DOCKER_REGISTRY}:latest
-                            echo "Pushed production image with latest tag"
-                        else
-                            echo "Development image pushed without latest tag"
+        stage('Update Docker Compose') {
+            when {
+                expression { return env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master' }
+            }
+            steps {
+                script {
+                    echo "📝 Updating docker-compose with new image version..."
+
+                    // Оновлюємо docker-compose.yml з новою версією образу
+                    sh """
+                        if [ -f docker-compose.yml ]; then
+                            sed -i 's|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${env.BUILD_VERSION}|g' docker-compose.yml
+                            echo "Updated docker-compose.yml with version ${env.BUILD_VERSION}"
                         fi
                     """
                 }
@@ -118,34 +172,61 @@ pipeline {
     post {
         always {
             script {
+                // Очищуємо Docker образи для економії місця
                 sh """
-                    # Clean up local images
-                    docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
-                    docker rmi ${env.IMAGE_NAME}:latest || true
-                    docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
-                    if [ "${env.BUILD_TYPE}" = "production" ]; then
-                        docker rmi ${env.DOCKER_REGISTRY}:latest || true
-                    fi
+                    docker system prune -f
+                    docker images -q --filter 'dangling=true' | xargs -r docker rmi || true
                 """
-            }
-        }
-        success {
-            script {
-                if (params.PUSH_TO_ECR) {
-                    echo "Build and push completed successfully!"
-                    echo "Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                    echo "Tag: ${env.IMAGE_TAG}"
-                    echo "Build Type: ${env.BUILD_TYPE}"
-                } else {
-                    echo "Build completed successfully!"
-                    echo "Image tag: ${env.IMAGE_TAG}"
-                    echo "Image not pushed to ECR (PUSH_TO_ECR=false)"
+
+                // Архівуємо артефакти
+                if (fileExists('docker-compose.yml')) {
+                    archiveArtifacts artifacts: 'docker-compose.yml', fingerprint: true
+                }
+
+                if (fileExists('Dockerfile')) {
+                    archiveArtifacts artifacts: 'Dockerfile', fingerprint: true
                 }
             }
+            cleanWs()
         }
+
+        success {
+            script {
+                def message = "✅ Build successful!\n" +
+                             "📦 Image: ${IMAGE_NAME}:${env.BUILD_VERSION}\n" +
+                             "🏷️ Build type: ${params.BUILD_TYPE}\n" +
+                             "🌿 Branch: ${env.BRANCH_NAME}\n" +
+                             "💾 Commit: ${env.GIT_SHORT_COMMIT}"
+
+                if (params.PUSH_TO_ECR) {
+                    message += "\n🚀 Pushed to ECR: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_VERSION}"
+                }
+
+                echo message
+            }
+        }
+
         failure {
-            echo "Build failed! Check logs for details."
+            echo "❌ Build failed! Check the logs above for details."
         }
     }
 }
-////
+
+// Функція для генерації версії білда
+def generateBuildVersion() {
+    def buildType = params.BUILD_TYPE ?: 'dev'
+    def timestamp = env.BUILD_TIMESTAMP
+    def commit = env.GIT_SHORT_COMMIT
+    def buildNum = env.BUILD_NUMBER
+    def devName = env.DEVELOPER_NAME
+
+    switch(buildType) {
+        case 'production':
+            return "v1.0.${buildNum}-${commit}"
+        case 'staging':
+            return "staging-${timestamp}-${commit}"
+        case 'dev':
+        default:
+            return "${devName}-dev-${timestamp}-${commit}-${buildNum}"
+    }
+}
