@@ -19,50 +19,25 @@ pipeline {
     environment {
         IMAGE_NAME = 'gitea-app'
         ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        AWS_DEFAULT_REGION = 'us-east-1'
         BUILD_DATE = sh(script: 'date +%Y%m%d-%H%M%S', returnStdout: true).trim()
         COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-        BRANCH_NAME = env.BRANCH_NAME ?: 'main'
-        USER_NAME = env.BUILD_USER ?: 'jenkins'
+        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
     }
 
     stages {
-        stage('Load Environment') {
-            steps {
-                script {
-                    sh '''
-                        if [ ! -f secrets/.env ]; then
-                            if [ -f .env.enc ]; then
-                                echo "Decrypting environment file..."
-                                make decrypt
-                            else
-                                echo "ERROR: No environment file found!"
-                                exit 1
-                            fi
-                        fi
-
-                        echo "Loading AWS credentials from secrets/.env"
-                        export $(cat secrets/.env | grep -E '^AWS_' | xargs)
-
-                        # Verify credentials are loaded
-                        if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-                            echo "ERROR: AWS credentials not found in secrets/.env"
-                            exit 1
-                        fi
-
-                        echo "AWS credentials loaded successfully"
-                    '''
-                }
-            }
-        }
-
         stage('Preparation') {
             steps {
                 script {
+                    env.BRANCH_NAME = env.BRANCH_NAME ?: 'main'
+                    env.USER_NAME = env.BUILD_USER ?: 'jenkins'
+
                     if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
                         env.VERSION = "prod-${BUILD_DATE}-${COMMIT_HASH}"
                         env.IS_PRODUCTION = 'true'
                     } else {
-                        env.VERSION = "dev-${USER_NAME}-${BUILD_NUMBER}-${BUILD_DATE}-${COMMIT_HASH}"
+                        env.VERSION = "dev-${env.USER_NAME}-${BUILD_NUMBER}-${BUILD_DATE}-${COMMIT_HASH}"
                         env.IS_PRODUCTION = 'false'
                     }
 
@@ -132,11 +107,6 @@ pipeline {
             steps {
                 script {
                     sh '''
-                        set -e
-
-                        # Load AWS credentials from .env
-                        export $(cat secrets/.env | grep -E '^AWS_' | xargs)
-
                         echo "Logging in to ECR..."
                         aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
 
@@ -146,7 +116,6 @@ pipeline {
 
                     if (env.IS_PRODUCTION == 'true') {
                         sh '''
-                            export $(cat secrets/.env | grep -E '^AWS_' | xargs)
                             echo "Pushing production tags..."
                             docker push $ECR_REGISTRY:latest
                             docker push $ECR_REGISTRY:production
@@ -185,15 +154,7 @@ pipeline {
     post {
         always {
             script {
-                sh '''
-                    docker system prune -f || true
-
-                    # Clean up environment file if it was decrypted during build
-                    if [ -f secrets/.env ] && [ -f .env.enc ]; then
-                        echo "Cleaning up decrypted environment file..."
-                        rm -f secrets/.env
-                    fi
-                '''
+                sh 'docker system prune -f || true'
             }
         }
         success {
@@ -207,14 +168,6 @@ pipeline {
         }
         failure {
             echo "Pipeline failed!"
-            script {
-                sh '''
-                    # Clean up environment file even on failure
-                    if [ -f secrets/.env ] && [ -f .env.enc ]; then
-                        rm -f secrets/.env
-                    fi
-                '''
-            }
         }
     }
 }
