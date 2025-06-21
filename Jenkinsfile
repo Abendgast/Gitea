@@ -51,7 +51,7 @@ pipeline {
 
     stage('Test Image') {
       steps {
-        sh "docker run --rm ${IMAGE_NAME}:${VERSION_TAG} --version"
+        sh "docker run --rm ${IMAGE_NAME}:${VERSION_TAG} /app/gitea/gitea --version"
       }
     }
 
