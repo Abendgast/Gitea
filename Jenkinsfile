@@ -2,7 +2,7 @@ pipeline {
   agent {
     label 'docker-agent'
   }
-
+////
   parameters {
     booleanParam(
       name: 'PUSH_TO_ECR',
