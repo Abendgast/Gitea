@@ -10,12 +10,17 @@ pipeline {
   }
 
   stages {
-    stage('Get changed files') {
-      when {
-        branch 'dev'
-      }
+    stage('Get changed .go files') {
       steps {
         script {
+          echo "Running on branch: ${env.BRANCH_NAME}"
+
+          if (env.BRANCH_NAME != 'dev') {
+            echo "Not on dev branch — skipping analysis"
+            currentBuild.result = 'SUCCESS'
+            return
+          }
+
           def changed = sh(
             script: 'git fetch origin main && git diff --name-only origin/main...HEAD | grep "\\.go$" || true',
             returnStdout: true
@@ -43,11 +48,14 @@ pipeline {
     }
 
     stage('Run SonarQube analysis') {
-      when {
-        branch 'dev'
-      }
       steps {
-        sh 'sonar-scanner -X'
+        script {
+          if (env.BRANCH_NAME != 'dev') {
+            echo "Not on dev branch — skipping analysis"
+            return
+          }
+          sh 'sonar-scanner -X'
+        }
       }
     }
 
