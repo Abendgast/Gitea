@@ -1,11 +1,15 @@
-groovy
 pipeline {
     agent {
         label 'docker-agent'
     }
 
+    tools {
+        sonarQube 'SonarLocal'
+    }
+
     environment {
-        SONAR_HOST_URL = 'http://sonarqube:9000'
+        SONAR_HOST_URL = 'http://localhost:9000'
+        SCANNER_HOME = '/opt/sonar-scanner'
     }
 
     stages {
@@ -17,18 +21,24 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                script {
-                    def scannerHome = '/opt/sonar-scanner'
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh """
-                        ${scannerHome}/bin/sonar-scanner \
+                        ${SCANNER_HOME}/bin/sonar-scanner \
                             -Dsonar.projectKey=devops-infra \
                             -Dsonar.projectName='DevOps Infra' \
                             -Dsonar.sources=. \
                             -Dsonar.host.url=${SONAR_HOST_URL} \
-                            -Dsonar.login=admin \
-                            -Dsonar.password=admin \
+                            -Dsonar.login=${SONAR_TOKEN} \
                             -Dsonar.exclusions='**/*.log,**/logs/**,**/.git/**,**/node_modules/**'
                     """
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
