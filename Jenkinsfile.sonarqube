@@ -47,7 +47,7 @@ pipeline {
                           -Dsonar.sources=. \
                           -Dsonar.host.url=$SONAR_HOST_URL \
                           -Dsonar.login=$SONAR_TOKEN \
-                          -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,\$//')
+                          -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\n' ',' | sed 's/,$//')
                     '''
                 }
             }
