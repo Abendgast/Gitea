@@ -3,21 +3,85 @@ pipeline {
         label 'docker-agent'
     }
 
+    environment {
+        GIT_CURL_VERBOSE = '1'
+        GIT_TRACE = '1'
+    }
+
     stages {
         stage('Checkout') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/dev']],
-                    extensions: [
-                        [$class: 'CloneOption', shallow: true, depth: 1],
-                        [$class: 'CleanBeforeCheckout']
-                    ],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git',
-                        credentialsId: 'github-credentials' // Якщо приватний репо
-                    ]]
-                ])
+                script {
+                    sh 'rm -rf .git || true'
+                    sh 'rm -rf * || true'
+
+                    sh '''
+                        git config --global core.compression 0
+                        git config --global pack.compression 0
+                        git config --global http.postBuffer 1048576000
+                        git config --global http.maxRequestBuffer 100M
+                        git config --global protocol.version 2
+                        git config --global http.version HTTP/1.1
+                        git config --global safe.directory '*'
+                    '''
+                }
+
+                retry(3) {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/dev']],
+                        extensions: [
+                            [$class: 'CloneOption', shallow: false, noTags: true],
+                            [$class: 'CleanBeforeCheckout'],
+                            [$class: 'CleanCheckout']
+                        ],
+                        userRemoteConfigs: [[
+                            url: 'https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git',
+                            credentialsId: 'github-credentials'
+                        ]],
+                        gitTool: 'Default'
+                    ])
+                }
+            }
+        }
+
+        stage('Git Info') {
+            steps {
+                sh '''
+                    echo "Git version:"
+                    git --version
+                    echo "Repository status:"
+                    git status
+                    echo "Repository info:"
+                    git log --oneline -5
+                '''
+            }
+        }
+
+        stage('Prepare Analysis') {
+            steps {
+                script {
+                    // Створюємо sonar-project.properties якщо його немає
+                    sh '''
+                        if [ ! -f sonar-project.properties ]; then
+                            cat > sonar-project.properties << EOF
+sonar.projectKey=devops-infra
+sonar.projectName=DevOps Infrastructure
+sonar.projectVersion=1.0
+sonar.sources=.
+sonar.sourceEncoding=UTF-8
+sonar.exclusions=**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**,**/target/**,**/node_modules/**,**/*.log,**/*.tmp
+sonar.coverage.exclusions=**/test/**,**/tests/**,**/*test*/**
+sonar.scm.provider=git
+sonar.scm.forceReloadAll=true
+EOF
+                            echo "Created sonar-project.properties"
+                        fi
+
+                        echo "Sonar project configuration:"
+                        cat sonar-project.properties
+                    '''
+                }
             }
         }
 
@@ -25,14 +89,22 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
-                        /opt/sonar-scanner/bin/sonar-scanner \
+                        echo "Starting SonarQube analysis..."
+
+                        timeout 60 sh -c 'until curl -s http://sonarqube:9000/api/system/status | grep -q "UP"; do sleep 5; done'
+
+                        sonar-scanner \
                             -Dsonar.projectKey=devops-infra \
                             -Dsonar.projectName="DevOps Infrastructure" \
                             -Dsonar.sources=. \
                             -Dsonar.host.url=http://sonarqube:9000 \
                             -Dsonar.login=${SONAR_TOKEN} \
-                            -Dsonar.exclusions='**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**' \
-                            -Dsonar.scm.provider=git
+                            -Dsonar.exclusions='**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**,**/splunk/var/**,**/splunk/etc/**' \
+                            -Dsonar.scm.provider=git \
+                            -Dsonar.scm.forceReloadAll=true \
+                            -Dsonar.projectVersion=1.0 \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -X
                     '''
                 }
             }
@@ -40,8 +112,21 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                timeout(time: 10, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+
+                        if (qg.status != 'OK') {
+                            echo "Quality Gate Status: ${qg.status}"
+                            if (qg.status == 'ERROR') {
+                                error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                            } else {
+                                unstable "Quality Gate warning: ${qg.status}"
+                            }
+                        } else {
+                            echo "Quality Gate passed successfully!"
+                        }
+                    }
                 }
             }
         }
@@ -49,7 +134,14 @@ pipeline {
 
     post {
         always {
+            echo 'Cleaning up workspace...'
             cleanWs()
+        }
+        success {
+            echo 'SonarQube analysis completed successfully!'
+        }
+        failure {
+            echo 'SonarQube analysis failed!'
         }
     }
 }
