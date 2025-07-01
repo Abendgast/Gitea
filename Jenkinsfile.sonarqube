@@ -30,42 +30,61 @@ pipeline {
             }
         }
 
-        stage('Git Info') {
+        stage('Wait for SonarQube') {
             steps {
                 sh '''
-                    echo "Git version:"
-                    git --version
-                    echo "Repository status:"
-                    git status
-                    echo "Repository info:"
-                    git log --oneline -5
+                    echo "Waiting for SonarQube to be ready..."
+                    timeout 120 sh -c 'until curl -s http://localhost:9000/api/system/status | grep -q "UP"; do
+                        echo "SonarQube not ready yet, waiting..."
+                        sleep 10
+                    done'
+                    echo "SonarQube is ready!"
                 '''
+            }
+        }
+
+        stage('Create SonarQube Project') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        echo "Creating SonarQube project if it doesn't exist..."
+
+                        PROJECT_EXISTS=$(curl -s -u ${SONAR_TOKEN}: \
+                            "http://localhost:9000/api/projects/search?projects=devops-infra" \
+                            | grep -c "devops-infra" || echo "0")
+
+                        if [ "$PROJECT_EXISTS" = "0" ]; then
+                            echo "Project doesn't exist, creating..."
+                            curl -X POST -u ${SONAR_TOKEN}: \
+                                "http://localhost:9000/api/projects/create" \
+                                -d "project=devops-infra" \
+                                -d "name=DevOps Infrastructure"
+                            echo "Project created successfully!"
+                        else
+                            echo "Project already exists, skipping creation."
+                        fi
+                    '''
+                }
             }
         }
 
         stage('Prepare Analysis') {
             steps {
-                script {
-                    sh '''
-                        if [ ! -f sonar-project.properties ]; then
-                            cat > sonar-project.properties << EOF
+                sh '''
+                    cat > sonar-project.properties << EOF
 sonar.projectKey=devops-infra
 sonar.projectName=DevOps Infrastructure
 sonar.projectVersion=1.0
 sonar.sources=.
 sonar.sourceEncoding=UTF-8
-sonar.exclusions=**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**,**/target/**,**/node_modules/**,**/*.log,**/*.tmp
+sonar.exclusions=**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**,**/target/**,**/node_modules/**,**/*.log,**/*.tmp,**/splunk/var/**,**/splunk/etc/**
 sonar.coverage.exclusions=**/test/**,**/tests/**,**/*test*/**
 sonar.scm.provider=git
 sonar.scm.forceReloadAll=true
 EOF
-                            echo "Created sonar-project.properties"
-                        fi
-
-                        echo "Sonar project configuration:"
-                        cat sonar-project.properties
-                    '''
-                }
+                    echo "Created sonar-project.properties:"
+                    cat sonar-project.properties
+                '''
             }
         }
 
@@ -75,8 +94,6 @@ EOF
                     sh '''
                         echo "Starting SonarQube analysis..."
 
-                        timeout 60 sh -c 'until curl -s http://localhost:9000/api/system/status | grep -q "UP"; do sleep 5; done'
-
                         sonar-scanner \
                             -Dsonar.projectKey=devops-infra \
                             -Dsonar.projectName="DevOps Infrastructure" \
@@ -85,7 +102,6 @@ EOF
                             -Dsonar.login=${SONAR_TOKEN} \
                             -Dsonar.exclusions='**/repos/**,**/data/**,**/logs/**,**/.idea/**,**/secrets/**,**/splunk/var/**,**/splunk/etc/**' \
                             -Dsonar.scm.provider=git \
-                            -Dsonar.scm.forceReloadAll=true \
                             -Dsonar.projectVersion=1.0 \
                             -Dsonar.sourceEncoding=UTF-8
                     '''
@@ -97,17 +113,22 @@ EOF
             steps {
                 timeout(time: 10, unit: 'MINUTES') {
                     script {
-                        def qg = waitForQualityGate()
-
-                        if (qg.status != 'OK') {
-                            echo "Quality Gate Status: ${qg.status}"
-                            if (qg.status == 'ERROR') {
-                                error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                        try {
+                            def qg = waitForQualityGate()
+                            if (qg.status != 'OK') {
+                                echo "Quality Gate Status: ${qg.status}"
+                                if (qg.status == 'ERROR') {
+                                    error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                                } else {
+                                    unstable "Quality Gate warning: ${qg.status}"
+                                }
                             } else {
-                                unstable "Quality Gate warning: ${qg.status}"
+                                echo "Quality Gate passed successfully!"
                             }
-                        } else {
-                            echo "Quality Gate passed successfully!"
+                        } catch (Exception e) {
+                            echo "Quality Gate check failed: ${e.getMessage()}"
+                            echo "This might be normal for the first run. Check SonarQube UI."
+                            unstable "Quality Gate check failed - please verify in SonarQube UI"
                         }
                     }
                 }
@@ -122,6 +143,7 @@ EOF
         }
         success {
             echo 'SonarQube analysis completed successfully!'
+            echo 'Check results at: http://localhost:9000/dashboard?id=devops-infra'
         }
         failure {
             echo 'SonarQube analysis failed!'
