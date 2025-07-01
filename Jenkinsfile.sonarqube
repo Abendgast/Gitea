@@ -1,0 +1,36 @@
+groovy
+pipeline {
+    agent {
+        label 'docker-agent'
+    }
+
+    environment {
+        SONAR_HOST_URL = 'http://sonarqube:9000'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = '/opt/sonar-scanner'
+                    sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=devops-infra \
+                            -Dsonar.projectName='DevOps Infra' \
+                            -Dsonar.sources=. \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=admin \
+                            -Dsonar.password=admin \
+                            -Dsonar.exclusions='**/*.log,**/logs/**,**/.git/**,**/node_modules/**'
+                    """
+                }
+            }
+        }
+    }
+}
