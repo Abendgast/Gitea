@@ -13,36 +13,21 @@ pipeline {
     stage('Get changed .go files') {
       steps {
         script {
-          echo "Running on branch: ${env.BRANCH_NAME}"
-
-          if (env.BRANCH_NAME != 'dev') {
+          def branch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+          echo "Running on branch: ${branch}"
+          if (branch == "dev") {
+            env.ON_DEV_BRANCH = "true"
+            def changedFiles = sh(script: "git fetch origin main && git diff --name-only origin/main...HEAD | grep '\\.go$' || true", returnStdout: true).trim()
+            if (changedFiles) {
+              writeFile file: 'changed-go-files.txt', text: changedFiles
+              env.HAS_GO_CHANGES = "true"
+              echo "Changed .go files:\n${changedFiles}"
+            } else {
+              echo "No .go files changed."
+            }
+          } else {
             echo "Not on dev branch — skipping analysis"
-            currentBuild.result = 'SUCCESS'
-            return
           }
-
-          def changed = sh(
-            script: 'git fetch origin main && git diff --name-only origin/main...HEAD | grep "\\.go$" || true',
-            returnStdout: true
-          ).trim().split('\n').findAll { it?.trim() }
-
-          if (changed.isEmpty()) {
-            echo "No changed .go files. Skipping analysis."
-            currentBuild.result = 'SUCCESS'
-            return
-          }
-
-          def inclusions = changed.join(',')
-
-          writeFile file: 'sonar-project.properties', text: """
-            sonar.projectKey=gitea-devops
-            sonar.projectName=Gitea DevOps
-            sonar.sources=.
-            sonar.inclusions=${inclusions}
-            sonar.language=go
-            sonar.host.url=http://sonarqube:9000
-            sonar.login=${SONAR_TOKEN}
-          """.stripIndent()
         }
       }
     }
