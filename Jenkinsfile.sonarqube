@@ -1,73 +1,83 @@
 pipeline {
-    agent { label 'docker-agent' }
+  agent {
+    label 'docker-agent'
+  }
 
-    environment {
-        SONAR_HOST_URL = 'http://sonarqube:9000'
-        SONAR_TOKEN = credentials('sonar-token')
+  environment {
+    SONAR_HOST_URL = 'http://sonarqube:9000'
+    SONAR_SCANNER_OPTS = "-Xmx512m"
+  }
+
+  options {
+    skipDefaultCheckout true
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        script {
+          echo "Detected branch: ${env.BRANCH_NAME}"
+          if (env.BRANCH_NAME != 'dev') {
+            currentBuild.result = 'NOT_BUILT'
+            error("Skipping analysis: not running on 'dev' branch.")
+          }
+        }
+      }
     }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-                script {
-                    BRANCH_NAME = env.GIT_BRANCH?.replaceFirst(/^origin\//, '') ?: 'main'
-                    echo "Detected branch: ${BRANCH_NAME}"
-                }
-            }
-        }
+    stage('Detect .go changes compared to main') {
+      steps {
+        script {
+          sh "git fetch origin main"
 
-        stage('Detect .go changes compared to main') {
-            steps {
-                script {
-                    sh 'git fetch origin main'
-                    def changedFiles = sh(
-                        script: "git diff --name-only origin/main...HEAD | grep '\\.go$' || true",
-                        returnStdout: true
-                    ).trim()
-                    writeFile file: 'changed-go-files.txt', text: changedFiles
-                    echo "Detected changed .go files:\n${changedFiles}"
-                }
-            }
-        }
+          def changed = sh(script: '''
+            git diff --name-only origin/main...HEAD | grep '\\.go$' || true
+          ''', returnStdout: true).trim()
 
-        stage('SonarQube Analysis') {
-            when {
-                expression {
-                    return fileExists('changed-go-files.txt') && readFile('changed-go-files.txt').trim()
-                }
-            }
-            steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        export JAVA_CMD=$(which java)
-
-                        sonar-scanner \
-                          -Dsonar.projectKey=gitea \
-                          -Dsonar.sources=. \
-                          -Dsonar.host.url=$SONAR_HOST_URL \
-                          -Dsonar.login=$SONAR_TOKEN \
-                          -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\n' ',' | sed 's/,$//')
-                    '''
-                }
-            }
+          if (changed) {
+            writeFile file: 'changed-go-files.txt', text: changed
+            echo "Detected changed .go files:\n${changed}"
+            env.HAS_GO_CHANGES = "true"
+          } else {
+            echo "No .go files changed. Aborting analysis."
+            currentBuild.result = 'NOT_BUILT'
+            error("No .go changes to analyze.")
+          }
         }
-
-        stage('Archive Sonar Report') {
-            when {
-                expression {
-                    currentBuild.currentResult == 'SUCCESS'
-                }
-            }
-            steps {
-                archiveArtifacts artifacts: '**/sonar-report.json', onlyIfSuccessful: true
-            }
-        }
+      }
     }
 
-    post {
-        failure {
-            echo "[Gitea] do not publish assets due to build being non-Successfully"
+    stage('SonarQube Analysis') {
+      when {
+        environment name: 'HAS_GO_CHANGES', value: 'true'
+      }
+      steps {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            sonar-scanner \
+              -Dsonar.projectKey=gitea \
+              -Dsonar.sources=. \
+              -Dsonar.host.url=$SONAR_HOST_URL \
+              -Dsonar.login=$SONAR_TOKEN \
+              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,\$//')
+          '''
         }
+      }
     }
+
+    stage('Archive Sonar Report') {
+      steps {
+        sh '''
+          mkdir -p artifacts
+          if [ -f .scannerwork/report-task.txt ]; then
+            cp .scannerwork/report-task.txt artifacts/
+          else
+            echo 'No report generated.' > artifacts/no-report.txt
+          fi
+        '''
+        archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
+      }
+    }
+  }
 }
