@@ -55,6 +55,8 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
+            rm -rf /opt/sonar-scanner/jre
+
             sonar-scanner \
               -Dsonar.projectKey=gitea \
               -Dsonar.sources=. \
