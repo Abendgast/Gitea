@@ -3,27 +3,12 @@ pipeline {
         label 'docker-agent'
     }
 
-    environment {
-        GIT_CURL_VERBOSE = '1'
-        GIT_TRACE = '1'
-    }
-
     stages {
         stage('Checkout') {
             steps {
                 script {
                     sh 'rm -rf .git || true'
                     sh 'rm -rf * || true'
-
-                    sh '''
-                        git config --global core.compression 0
-                        git config --global pack.compression 0
-                        git config --global http.postBuffer 1048576000
-                        git config --global http.maxRequestBuffer 100M
-                        git config --global protocol.version 2
-                        git config --global http.version HTTP/1.1
-                        git config --global safe.directory '*'
-                    '''
                 }
 
                 retry(3) {
@@ -31,7 +16,7 @@ pipeline {
                         $class: 'GitSCM',
                         branches: [[name: '*/dev']],
                         extensions: [
-                            [$class: 'CloneOption', shallow: false, noTags: true],
+                            [$class: 'CloneOption', shallow: false, noTags: false, depth: 0],
                             [$class: 'CleanBeforeCheckout'],
                             [$class: 'CleanCheckout']
                         ],
@@ -61,7 +46,6 @@ pipeline {
         stage('Prepare Analysis') {
             steps {
                 script {
-                    // Створюємо sonar-project.properties якщо його немає
                     sh '''
                         if [ ! -f sonar-project.properties ]; then
                             cat > sonar-project.properties << EOF
@@ -103,8 +87,7 @@ EOF
                             -Dsonar.scm.provider=git \
                             -Dsonar.scm.forceReloadAll=true \
                             -Dsonar.projectVersion=1.0 \
-                            -Dsonar.sourceEncoding=UTF-8 \
-                            -X
+                            -Dsonar.sourceEncoding=UTF-8
                     '''
                 }
             }
