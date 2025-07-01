@@ -3,33 +3,39 @@ pipeline {
         label 'docker-agent'
     }
 
-    tools {
-        sonarQube 'SonarLocal'
-    }
-
-    environment {
-        SONAR_HOST_URL = 'http://localhost:9000'
-        SCANNER_HOME = '/opt/sonar-scanner'
-    }
-
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [
+                        [$class: 'CloneOption', shallow: true, depth: 1],
+                        [$class: 'SparseCheckoutPaths', sparseCheckoutPaths: [
+                            [$class: 'SparseCheckoutPath', path: 'docker-compose.yml'],
+                            [$class: 'SparseCheckoutPath', path: 'Makefile'],
+                            [$class: 'SparseCheckoutPath', path: 'jenkins-agent/'],
+                            [$class: 'SparseCheckoutPath', path: 'nginx/'],
+                            [$class: 'SparseCheckoutPath', path: 'otel-collector/'],
+                            [$class: 'SparseCheckoutPath', path: 'splunk/'],
+                            [$class: 'SparseCheckoutPath', path: 'gitea/']
+                        ]]
+                    ],
+                    userRemoteConfigs: [[url: 'http://gitea:3000/gitea/gitea.git']]
+                ])
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('SonarQube') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh """
-                        ${SCANNER_HOME}/bin/sonar-scanner \
+                        /opt/sonar-scanner/bin/sonar-scanner \
                             -Dsonar.projectKey=devops-infra \
-                            -Dsonar.projectName='DevOps Infra' \
                             -Dsonar.sources=. \
-                            -Dsonar.host.url=${SONAR_HOST_URL} \
-                            -Dsonar.login=${SONAR_TOKEN} \
-                            -Dsonar.exclusions='**/*.log,**/logs/**,**/.git/**,**/node_modules/**'
+                            -Dsonar.host.url=http://sonarqube:9000 \
+                            -Dsonar.login=\${SONAR_TOKEN} \
+                            -Dsonar.exclusions='**/repos/**,**/data/**,**/logs/**'
                     """
                 }
             }
@@ -37,9 +43,7 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
+                waitForQualityGate abortPipeline: true
             }
         }
     }
