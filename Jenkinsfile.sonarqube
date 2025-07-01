@@ -17,15 +17,17 @@ pipeline {
       steps {
         checkout scm
         script {
-          // Витягуємо назву гілки з ENV або fallback через git
-          def rawBranch = env.GIT_BRANCH ?: sh(
-            script: "git rev-parse --abbrev-ref HEAD",
+          def rawRef = sh(
+            script: "git log -n 1 --pretty=%D HEAD",
             returnStdout: true
           ).trim()
 
-          // Якщо це refs/remotes/origin/dev → беремо тільки "dev"
-          def branchParts = rawBranch.tokenize('/')
-          env.GIT_BRANCH_NAME = branchParts[-1]
+          def matcher = rawRef =~ /origin\/([^, ]+)/
+          if (matcher) {
+            env.GIT_BRANCH_NAME = matcher[0][1]
+          } else {
+            error "Cannot detect branch name from: ${rawRef}"
+          }
 
           echo "Detected branch: ${env.GIT_BRANCH_NAME}"
 
