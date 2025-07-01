@@ -5,6 +5,7 @@ pipeline {
 
   environment {
     SONAR_HOST_URL = 'http://sonarqube:9000'
+    GIT_BRANCH_NAME = ''
   }
 
   options {
@@ -15,45 +16,48 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
+        script {
+          // Витягуємо назву гілки з ENV або fallback через git
+          def rawBranch = env.GIT_BRANCH ?: sh(
+            script: "git rev-parse --abbrev-ref HEAD",
+            returnStdout: true
+          ).trim()
+
+          // Якщо це refs/remotes/origin/dev → беремо тільки "dev"
+          def branchParts = rawBranch.tokenize('/')
+          env.GIT_BRANCH_NAME = branchParts[-1]
+
+          echo "Detected branch: ${env.GIT_BRANCH_NAME}"
+
+          if (env.GIT_BRANCH_NAME != 'dev') {
+            error "Pipeline is not running on 'dev' branch. Aborting."
+          }
+        }
       }
     }
 
     stage('Detect .go changes on dev') {
       steps {
         script {
-          def branch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
-          echo "Running on branch: ${branch}"
+          def changed = sh(script: '''
+            git fetch origin main
+            git diff --name-only origin/main...HEAD | grep '\\.go$' || true
+          ''', returnStdout: true).trim()
 
-          if (branch == "dev") {
-            env.ON_DEV_BRANCH = "true"
-
-            def changed = sh(script: '''
-              git fetch origin main
-              git diff --name-only origin/main...HEAD | grep '\\.go$' || true
-            ''', returnStdout: true).trim()
-
-            if (changed) {
-              writeFile file: 'changed-go-files.txt', text: changed
-              echo "Changed .go files:\n${changed}"
-              env.HAS_GO_CHANGES = "true"
-            } else {
-              echo "No .go files changed."
-              env.HAS_GO_CHANGES = "false"
-            }
+          if (changed) {
+            writeFile file: 'changed-go-files.txt', text: changed
+            echo "Changed .go files:\n${changed}"
+            env.HAS_GO_CHANGES = "true"
           } else {
-            echo "Not on dev branch. Skipping analysis."
-            env.ON_DEV_BRANCH = "false"
+            echo "No .go files changed. Aborting analysis."
+            currentBuild.result = 'FAILURE'
+            error("No .go file changes detected.")
           }
         }
       }
     }
 
     stage('SonarQube Analysis') {
-      when {
-        expression {
-          return env.ON_DEV_BRANCH == "true" && env.HAS_GO_CHANGES == "true"
-        }
-      }
       environment {
         SONAR_SCANNER_OPTS = "-Xmx512m"
       }
