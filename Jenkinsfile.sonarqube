@@ -1,62 +1,87 @@
 pipeline {
-  agent any
+  agent {
+    label 'docker-agent'
+  }
 
   environment {
-    SONAR_TOKEN = credentials('sonar-token')
+    SONAR_HOST_URL = 'http://sonarqube:9000'
   }
 
   options {
-    skipStagesAfterUnstable()
+    skipDefaultCheckout true
   }
 
   stages {
-    stage('Get changed .go files') {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Detect .go changes on dev') {
       steps {
         script {
           def branch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
           echo "Running on branch: ${branch}"
+
           if (branch == "dev") {
             env.ON_DEV_BRANCH = "true"
-            def changedFiles = sh(script: "git fetch origin main && git diff --name-only origin/main...HEAD | grep '\\.go$' || true", returnStdout: true).trim()
-            if (changedFiles) {
-              writeFile file: 'changed-go-files.txt', text: changedFiles
+
+            def changed = sh(script: '''
+              git fetch origin main
+              git diff --name-only origin/main...HEAD | grep '\\.go$' || true
+            ''', returnStdout: true).trim()
+
+            if (changed) {
+              writeFile file: 'changed-go-files.txt', text: changed
+              echo "Changed .go files:\n${changed}"
               env.HAS_GO_CHANGES = "true"
-              echo "Changed .go files:\n${changedFiles}"
             } else {
               echo "No .go files changed."
+              env.HAS_GO_CHANGES = "false"
             }
           } else {
-            echo "Not on dev branch — skipping analysis"
+            echo "Not on dev branch. Skipping analysis."
+            env.ON_DEV_BRANCH = "false"
           }
         }
       }
     }
 
-    stage('Run SonarQube analysis') {
-      steps {
-        script {
-          if (env.BRANCH_NAME != 'dev') {
-            echo "Not on dev branch — skipping analysis"
-            return
-          }
-          sh 'sonar-scanner -X'
+    stage('SonarQube Analysis') {
+      when {
+        expression {
+          return env.ON_DEV_BRANCH == "true" && env.HAS_GO_CHANGES == "true"
         }
       }
-    }
-
-    stage('Archive Sonar report') {
+      environment {
+        SONAR_SCANNER_OPTS = "-Xmx512m"
+      }
       steps {
-        script {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
-            mkdir -p artifacts
-            if [ -f ".scannerwork/report-task.txt" ]; then
-              cp .scannerwork/report-task.txt artifacts/sonar-report.txt
-            else
-              echo "No report generated." > artifacts/sonar-report.txt
-            fi
+            sonar-scanner \
+              -Dsonar.projectKey=gitea \
+              -Dsonar.sources=. \
+              -Dsonar.host.url=$SONAR_HOST_URL \
+              -Dsonar.login=$SONAR_TOKEN \
+              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,\$//')
           '''
-          archiveArtifacts artifacts: 'artifacts/sonar-report.txt', fingerprint: true
         }
+      }
+    }
+
+    stage('Archive Sonar Report') {
+      steps {
+        sh '''
+          mkdir -p artifacts
+          if [ -f .scannerwork/report-task.txt ]; then
+            cp .scannerwork/report-task.txt artifacts/
+          else
+            echo 'No report generated.' > artifacts/no-report.txt
+          fi
+        '''
+        archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
       }
     }
   }
