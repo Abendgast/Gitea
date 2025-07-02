@@ -82,6 +82,18 @@ pipeline {
             source java_env.properties
             echo "Final JAVA_HOME: $JAVA_HOME"
             $JAVA_HOME/bin/java -version
+
+            # Fix SonarQube Scanner JRE path
+            echo "=== Fixing SonarQube Scanner JRE ==="
+            if [ -d "/opt/sonar-scanner" ]; then
+              echo "SonarQube Scanner found, checking JRE..."
+              if [ ! -f "/opt/sonar-scanner/jre/bin/java" ]; then
+                echo "SonarQube Scanner JRE missing, creating symlink..."
+                sudo mkdir -p /opt/sonar-scanner/jre/bin
+                sudo ln -sf $JAVA_HOME/bin/java /opt/sonar-scanner/jre/bin/java
+                echo "Created symlink: /opt/sonar-scanner/jre/bin/java -> $JAVA_HOME/bin/java"
+              fi
+            fi
           '''
         }
       }
@@ -127,13 +139,28 @@ pipeline {
             echo "PATH: $PATH"
             java -version
 
-            echo "=== Running SonarQube Scanner ==="
-            sonar-scanner \
-              -Dsonar.projectKey=gitea \
-              -Dsonar.sources=. \
-              -Dsonar.host.url=$SONAR_HOST_URL \
-              -Dsonar.login=$SONAR_TOKEN \
-              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
+            # Alternative approach: Use system Java directly
+            echo "=== Running SonarQube Scanner with system Java ==="
+
+            # Method 1: Try to use sonar-scanner with fixed JRE
+            if sonar-scanner --version >/dev/null 2>&1; then
+              echo "Using sonar-scanner binary..."
+              sonar-scanner \
+                -Dsonar.projectKey=gitea \
+                -Dsonar.sources=. \
+                -Dsonar.host.url=$SONAR_HOST_URL \
+                -Dsonar.login=$SONAR_TOKEN \
+                -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
+            else
+              # Method 2: Run SonarQube Scanner JAR directly with system Java
+              echo "Running SonarQube Scanner JAR directly..."
+              $JAVA_HOME/bin/java -jar /opt/sonar-scanner/lib/sonar-scanner-cli-*.jar \
+                -Dsonar.projectKey=gitea \
+                -Dsonar.sources=. \
+                -Dsonar.host.url=$SONAR_HOST_URL \
+                -Dsonar.login=$SONAR_TOKEN \
+                -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
+            fi
           '''
         }
       }
