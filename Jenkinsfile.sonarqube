@@ -77,9 +77,8 @@ pipeline {
       }
       steps {
         script {
-          echo "=== Waiting for Quality Gate result ==="
+          echo "Waiting for Quality Gate result"
 
-          // Читаємо task URL з report-task.txt
           def reportTaskFile = '.scannerwork/report-task.txt'
           if (!fileExists(reportTaskFile)) {
             error("SonarQube report-task.txt not found. Analysis might have failed.")
@@ -92,7 +91,6 @@ pipeline {
 
           echo "Task URL: ${taskUrl}"
 
-          // Чекаємо завершення аналізу
           timeout(time: 5, unit: 'MINUTES') {
             waitUntil {
               script {
@@ -116,7 +114,6 @@ pipeline {
             }
           }
 
-          // Отримуємо результат Quality Gate
           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
             def analysisId = sh(script: """
               curl -s -u \$SONAR_TOKEN: '${taskUrl}' | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4
@@ -130,24 +127,23 @@ pipeline {
 
             def qualityGateUrl = "${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${analysisId}"
             def qualityGateResult = sh(script: """
-              curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}' | grep -o '"status":"[^"]*"' | cut -d'"' -f4
+              curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}' | grep -o '"status":"[^"]*"' | cut -d'"' -f4 | head -1
             """, returnStdout: true).trim()
 
             echo "Quality Gate status: ${qualityGateResult}"
 
             if (qualityGateResult == 'ERROR') {
-              // Отримуємо детальну інформацію про помилки
               def details = sh(script: """
-                curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}' | grep -o '"conditions":\\[.*\\]' || echo 'No details available'
+                curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}'
               """, returnStdout: true).trim()
 
-              echo "Quality Gate failed. Details: ${details}"
+              echo "Quality Gate failed"
               currentBuild.result = 'UNSTABLE'
-              error("Quality Gate failed. Check SonarQube dashboard for details: ${SONAR_HOST_URL}/dashboard?id=gitea")
+              error("Quality Gate failed. Check SonarQube for details")
             } else if (qualityGateResult == 'OK') {
-              echo "✅ Quality Gate passed!"
+              echo "Quality Gate passed"
             } else {
-              echo "⚠️ Quality Gate status: ${qualityGateResult}"
+              echo "Quality Gate status: ${qualityGateResult}"
             }
           }
         }
@@ -159,15 +155,15 @@ pipeline {
         environment name: 'HAS_GO_CHANGES', value: 'true'
       }
       steps {
-        sh '''
-          mkdir -p artifacts
-          if [ -f .scannerwork/report-task.txt ]; then
-            cp .scannerwork/report-task.txt artifacts/
-            echo "SonarQube Dashboard: $SONAR_HOST_URL/dashboard?id=gitea" > artifacts/sonar-dashboard-link.txt
-          else
-            echo 'No report generated.' > artifacts/no-report.txt
-          fi
-        '''
+          sh '''
+            mkdir -p artifacts
+            if [ -f .scannerwork/report-task.txt ]; then
+              cp .scannerwork/report-task.txt artifacts/
+              echo "SonarQube Dashboard: $SONAR_HOST_URL/projects" > artifacts/sonar-dashboard-link.txt
+            else
+              echo 'No report generated.' > artifacts/no-report.txt
+            fi
+          '''
         archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
       }
     }
