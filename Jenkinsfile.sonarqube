@@ -54,16 +54,7 @@ pipeline {
             else
               echo "Java not found in PATH, searching manually..."
 
-              JAVA_LOCATIONS=(
-                "/usr/lib/jvm/default-java/bin/java"
-                "/usr/lib/jvm/java-17-openjdk-amd64/bin/java"
-                "/usr/lib/jvm/java-11-openjdk-amd64/bin/java"
-                "/usr/lib/jvm/java-8-openjdk-amd64/bin/java"
-                "/opt/java/openjdk/bin/java"
-                "/usr/bin/java"
-              )
-
-              for java_path in "${JAVA_LOCATIONS[@]}"; do
+              for java_path in "/usr/lib/jvm/default-java/bin/java" "/usr/lib/jvm/java-17-openjdk-amd64/bin/java" "/usr/lib/jvm/java-11-openjdk-amd64/bin/java" "/usr/lib/jvm/java-8-openjdk-amd64/bin/java" "/opt/java/openjdk/bin/java" "/usr/bin/java"; do
                 if [ -f "$java_path" ]; then
                   echo "Found Java at: $java_path"
                   export JAVA_HOME=$(dirname $(dirname "$java_path"))
@@ -125,7 +116,6 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
-            # Завантажуємо Java environment
             source java_env.properties
             export PATH="$JAVA_HOME/bin:$PATH"
 
