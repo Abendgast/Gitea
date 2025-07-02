@@ -7,13 +7,11 @@ pipeline {
     SONAR_HOST_URL = 'http://sonarqube:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
     JAVA_HOME = '/opt/java/openjdk'
-    QUALITY_GATE_TIMEOUT = '10'
   }
 
   options {
     skipDefaultCheckout true
     timeout(time: 30, unit: 'MINUTES')
-    buildDiscarder(logRotator(numToKeepStr: '10'))
   }
 
   stages {
@@ -33,14 +31,7 @@ pipeline {
     stage('Detect .go changes compared to main') {
       steps {
         script {
-          try {
-            sh "git fetch origin main"
-          } catch (Exception e) {
-            echo "Warning: Could not fetch main branch: ${e.getMessage()}"
-            echo "Proceeding with analysis of all .go files"
-            env.HAS_GO_CHANGES = "true"
-            return
-          }
+          sh "git fetch origin main"
 
           def changed = sh(script: '''
             git diff --name-only origin/main...HEAD | grep '\\.go$' || true
@@ -51,41 +42,9 @@ pipeline {
             echo "Detected changed .go files:\n${changed}"
             env.HAS_GO_CHANGES = "true"
           } else {
-            echo "No .go files changed. Aborting analysis."
-            currentBuild.result = 'NOT_BUILT'
-            error("No .go changes to analyze.")
-          }
-        }
-      }
-    }
-
-    stage('Validate Go Files') {
-      when {
-        environment name: 'HAS_GO_CHANGES', value: 'true'
-      }
-      steps {
-        script {
-          echo "Validating Go Files"
-
-          def goVersion = sh(script: 'which go && go version || echo "Go not found"', returnStdout: true).trim()
-          echo "Go status: ${goVersion}"
-
-          if (goVersion.contains('go version')) {
-            try {
-              sh '''
-                echo "Running go vet on changed files"
-                while IFS= read -r file; do
-                  if [ -f "$file" ]; then
-                    echo "Checking: $file"
-                    go vet "$file" || echo "Warning: go vet failed for $file"
-                  fi
-                done < changed-go-files.txt
-              '''
-            } catch (Exception e) {
-              echo "Warning: Go validation failed: ${e.getMessage()}"
-            }
-          } else {
-            echo "Go not available, skipping syntax validation"
+            echo "No .go files changed. Skipping SonarQube analysis."
+            currentBuild.result = 'SUCCESS'
+            return
           }
         }
       }
@@ -97,85 +56,119 @@ pipeline {
       }
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-          script {
-            try {
-              sh '''
-                echo "Running SonarQube Analysis"
-                echo "Java version: $($JAVA_HOME/bin/java -version 2>&1 | head -1)"
-                echo "SonarQube URL: $SONAR_HOST_URL"
+          sh '''
+            echo "=== Running SonarQube Analysis ==="
+            echo "Java version: $($JAVA_HOME/bin/java -version 2>&1 | head -1)"
 
-                if [ -f changed-go-files.txt ] && [ -s changed-go-files.txt ]; then
-                  INCLUSIONS=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
-                  echo "Analyzing files: $INCLUSIONS"
-                else
-                  echo "No specific files to analyze, analyzing all Go files"
-                  INCLUSIONS="**/*.go"
-                fi
+            $JAVA_HOME/bin/java -jar /opt/sonar-scanner/lib/sonar-scanner-cli-*.jar \
+              -Dsonar.projectKey=gitea \
+              -Dsonar.sources=. \
+              -Dsonar.host.url=$SONAR_HOST_URL \
+              -Dsonar.login=$SONAR_TOKEN \
+              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
+          '''
+        }
+      }
+    }
 
-                $JAVA_HOME/bin/java -jar /opt/sonar-scanner/lib/sonar-scanner-cli-*.jar \
-                  -Dsonar.projectKey=gitea \
-                  -Dsonar.sources=. \
-                  -Dsonar.host.url=$SONAR_HOST_URL \
-                  -Dsonar.login=$SONAR_TOKEN \
-                  -Dsonar.inclusions="$INCLUSIONS" \
-                  -Dsonar.go.coverage.reportPaths=coverage.out \
-                  -Dsonar.exclusions="**/*_test.go,**/vendor/**,**/testdata/**"
-              '''
-            } catch (Exception e) {
-              echo "SonarQube analysis failed: ${e.getMessage()}"
+    stage('Quality Gate') {
+      when {
+        environment name: 'HAS_GO_CHANGES', value: 'true'
+      }
+      steps {
+        script {
+          echo "=== Waiting for Quality Gate result ==="
+
+          // Читаємо task URL з report-task.txt
+          def reportTaskFile = '.scannerwork/report-task.txt'
+          if (!fileExists(reportTaskFile)) {
+            error("SonarQube report-task.txt not found. Analysis might have failed.")
+          }
+
+          def taskUrl = sh(script: "grep 'ceTaskUrl=' ${reportTaskFile} | cut -d'=' -f2-", returnStdout: true).trim()
+          if (!taskUrl) {
+            error("Could not extract task URL from SonarQube report.")
+          }
+
+          echo "Task URL: ${taskUrl}"
+
+          // Чекаємо завершення аналізу
+          timeout(time: 5, unit: 'MINUTES') {
+            waitUntil {
+              script {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                  def taskStatus = sh(script: """
+                    curl -s -u \$SONAR_TOKEN: '${taskUrl}' | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo 'UNKNOWN'
+                  """, returnStdout: true).trim()
+
+                  echo "Task status: ${taskStatus}"
+
+                  if (taskStatus == 'SUCCESS') {
+                    return true
+                  } else if (taskStatus == 'FAILED' || taskStatus == 'CANCELLED') {
+                    error("SonarQube analysis failed with status: ${taskStatus}")
+                  }
+
+                  sleep(10)
+                  return false
+                }
+              }
+            }
+          }
+
+          // Отримуємо результат Quality Gate
+          withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+            def analysisId = sh(script: """
+              curl -s -u \$SONAR_TOKEN: '${taskUrl}' | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4
+            """, returnStdout: true).trim()
+
+            if (!analysisId) {
+              error("Could not extract analysis ID from SonarQube task.")
+            }
+
+            echo "Analysis ID: ${analysisId}"
+
+            def qualityGateUrl = "${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${analysisId}"
+            def qualityGateResult = sh(script: """
+              curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}' | grep -o '"status":"[^"]*"' | cut -d'"' -f4
+            """, returnStdout: true).trim()
+
+            echo "Quality Gate status: ${qualityGateResult}"
+
+            if (qualityGateResult == 'ERROR') {
+              // Отримуємо детальну інформацію про помилки
+              def details = sh(script: """
+                curl -s -u \$SONAR_TOKEN: '${qualityGateUrl}' | grep -o '"conditions":\\[.*\\]' || echo 'No details available'
+              """, returnStdout: true).trim()
+
+              echo "Quality Gate failed. Details: ${details}"
               currentBuild.result = 'UNSTABLE'
-              throw e
+              error("Quality Gate failed. Check SonarQube dashboard for details: ${SONAR_HOST_URL}/dashboard?id=gitea")
+            } else if (qualityGateResult == 'OK') {
+              echo "✅ Quality Gate passed!"
+            } else {
+              echo "⚠️ Quality Gate status: ${qualityGateResult}"
             }
           }
         }
       }
     }
 
-d as UNSTABLE due to Quality Gate timeout"
-          } catch (Exception e) {
-            echo "Quality Gate check failed: ${e.getMessage()}"
-            currentBuild.result = 'UNSTABLE'
-            echo "Build marked as UNSTABLE due to Quality Gate error"
-          }
-        }
-      }
-    }
-
     stage('Archive Sonar Report') {
+      when {
+        environment name: 'HAS_GO_CHANGES', value: 'true'
+      }
       steps {
-        script {
-          try {
-            sh '''
-              mkdir -p artifacts
-
-              if [ -f .scannerwork/report-task.txt ]; then
-                cp .scannerwork/report-task.txt artifacts/
-                echo "SonarQube report archived"
-              else
-                echo 'No SonarQube report generated.' > artifacts/no-sonar-report.txt
-              fi
-
-              if [ -f changed-go-files.txt ]; then
-                cp changed-go-files.txt artifacts/
-                echo "Changed files list archived"
-              fi
-
-              cat > artifacts/build-summary.txt << EOF
-Build Information:
-- Branch: ${env.BRANCH_NAME}
-- Build Number: ${env.BUILD_NUMBER}
-- Build Result: ${currentBuild.result ?: 'SUCCESS'}
-- Timestamp: $(date)
-- Go Changes Detected: ${env.HAS_GO_CHANGES ?: 'false'}
-EOF
-            '''
-
-            archiveArtifacts artifacts: 'artifacts/**', fingerprint: true, allowEmptyArchive: true
-
-          } catch (Exception e) {
-            echo "Warning: Failed to archive artifacts: ${e.getMessage()}"
-          }
-        }
+        sh '''
+          mkdir -p artifacts
+          if [ -f .scannerwork/report-task.txt ]; then
+            cp .scannerwork/report-task.txt artifacts/
+            echo "SonarQube Dashboard: $SONAR_HOST_URL/dashboard?id=gitea" > artifacts/sonar-dashboard-link.txt
+          else
+            echo 'No report generated.' > artifacts/no-report.txt
+          fi
+        '''
+        archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
       }
     }
   }
@@ -183,35 +176,17 @@ EOF
   post {
     always {
       script {
-        echo "Pipeline completed"
-        echo "Final build result: ${currentBuild.result ?: 'SUCCESS'}"
-
-        try {
-          sh '''
-            rm -f changed-go-files.txt
-            rm -rf .scannerwork
-          '''
-        } catch (Exception e) {
-          echo "Warning: Cleanup failed: ${e.getMessage()}"
+        if (env.HAS_GO_CHANGES != 'true') {
+          echo "Pipeline completed: No Go changes detected, skipped SonarQube analysis"
         }
       }
     }
-
-    success {
-      echo "Pipeline completed successfully"
-    }
-
-    unstable {
-      echo "Pipeline completed with warnings"
-    }
-
     failure {
-      echo "Pipeline failed"
-    }
-
-    cleanup {
       script {
-        echo "Performing final cleanup"
+        if (env.HAS_GO_CHANGES == 'true') {
+          echo "Pipeline failed during SonarQube analysis or Quality Gate check"
+          echo "Check SonarQube dashboard: ${SONAR_HOST_URL}/dashboard?id=gitea"
+        }
       }
     }
   }
