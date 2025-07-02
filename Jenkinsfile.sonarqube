@@ -6,6 +6,8 @@ pipeline {
   environment {
     SONAR_HOST_URL = 'http://sonarqube:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
+    JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
+    PATH = "${JAVA_HOME}/bin:${env.PATH}"
   }
 
   options {
@@ -55,6 +57,9 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
+            # Перевірка чи Java доступна
+            java -version
+
             sonar-scanner \
               -Dsonar.projectKey=gitea \
               -Dsonar.sources=. \
