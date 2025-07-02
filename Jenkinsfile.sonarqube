@@ -116,11 +116,14 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
+            # Завантажуємо Java environment
             source java_env.properties
             export PATH="$JAVA_HOME/bin:$PATH"
+            export SONAR_JAVA_HOME="$JAVA_HOME"
 
             echo "=== Java Environment Check ==="
             echo "JAVA_HOME: $JAVA_HOME"
+            echo "SONAR_JAVA_HOME: $SONAR_JAVA_HOME"
             echo "PATH: $PATH"
             java -version
 
