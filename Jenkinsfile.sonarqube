@@ -6,8 +6,6 @@ pipeline {
   environment {
     SONAR_HOST_URL = 'http://sonarqube:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
-    JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
-    PATH = "${JAVA_HOME}/bin:${env.PATH}"
   }
 
   options {
@@ -24,6 +22,76 @@ pipeline {
             currentBuild.result = 'NOT_BUILT'
             error("Skipping analysis: not running on 'dev' branch.")
           }
+        }
+      }
+    }
+
+    stage('Setup Java Environment') {
+      steps {
+        script {
+          sh '''
+            echo "=== Searching for Java installations ==="
+
+            if command -v java >/dev/null 2>&1; then
+              echo "Java found in PATH:"
+              which java
+              java -version
+
+              JAVA_PATH=$(which java)
+              echo "Java executable path: $JAVA_PATH"
+
+              if [ -L "$JAVA_PATH" ]; then
+                REAL_JAVA=$(readlink -f "$JAVA_PATH")
+                echo "Real Java path: $REAL_JAVA"
+                export JAVA_HOME=$(dirname $(dirname "$REAL_JAVA"))
+              else
+                export JAVA_HOME=$(dirname $(dirname "$JAVA_PATH"))
+              fi
+
+              echo "Setting JAVA_HOME to: $JAVA_HOME"
+              echo "JAVA_HOME=$JAVA_HOME" > java_env.properties
+
+            else
+              echo "Java not found in PATH, searching manually..."
+
+              JAVA_LOCATIONS=(
+                "/usr/lib/jvm/default-java/bin/java"
+                "/usr/lib/jvm/java-17-openjdk-amd64/bin/java"
+                "/usr/lib/jvm/java-11-openjdk-amd64/bin/java"
+                "/usr/lib/jvm/java-8-openjdk-amd64/bin/java"
+                "/opt/java/openjdk/bin/java"
+                "/usr/bin/java"
+              )
+
+              for java_path in "${JAVA_LOCATIONS[@]}"; do
+                if [ -f "$java_path" ]; then
+                  echo "Found Java at: $java_path"
+                  export JAVA_HOME=$(dirname $(dirname "$java_path"))
+                  echo "Setting JAVA_HOME to: $JAVA_HOME"
+                  echo "JAVA_HOME=$JAVA_HOME" > java_env.properties
+                  break
+                fi
+              done
+
+              if [ ! -f "java_env.properties" ]; then
+                echo "Searching entire system for Java..."
+                FOUND_JAVA=$(find /usr /opt -name "java" -type f -executable 2>/dev/null | grep -E "(bin/java|jre/bin/java)" | head -1)
+                if [ -n "$FOUND_JAVA" ]; then
+                  echo "Found Java at: $FOUND_JAVA"
+                  export JAVA_HOME=$(dirname $(dirname "$FOUND_JAVA"))
+                  echo "Setting JAVA_HOME to: $JAVA_HOME"
+                  echo "JAVA_HOME=$JAVA_HOME" > java_env.properties
+                else
+                  echo "ERROR: No Java installation found!"
+                  exit 1
+                fi
+              fi
+            fi
+
+            source java_env.properties
+            echo "Final JAVA_HOME: $JAVA_HOME"
+            $JAVA_HOME/bin/java -version
+          '''
         }
       }
     }
@@ -57,15 +125,22 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
-            # Перевірка чи Java доступна
+            # Завантажуємо Java environment
+            source java_env.properties
+            export PATH="$JAVA_HOME/bin:$PATH"
+
+            echo "=== Java Environment Check ==="
+            echo "JAVA_HOME: $JAVA_HOME"
+            echo "PATH: $PATH"
             java -version
 
+            echo "=== Running SonarQube Scanner ==="
             sonar-scanner \
               -Dsonar.projectKey=gitea \
               -Dsonar.sources=. \
               -Dsonar.host.url=$SONAR_HOST_URL \
               -Dsonar.login=$SONAR_TOKEN \
-              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,\$//')
+              -Dsonar.inclusions=$(cat changed-go-files.txt | tr '\\n' ',' | sed 's/,$//')
           '''
         }
       }
