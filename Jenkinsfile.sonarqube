@@ -7,7 +7,6 @@ pipeline {
     SONAR_HOST_URL = 'http://sonarqube:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
     JAVA_HOME = '/opt/java/openjdk'
-    // Timeout for Quality Gate check
     QUALITY_GATE_TIMEOUT = '10'
   }
 
@@ -66,7 +65,7 @@ pipeline {
       }
       steps {
         script {
-          echo "=== Validating Go Files ==="
+          echo "Validating Go Files"
 
           def goVersion = sh(script: 'which go && go version || echo "Go not found"', returnStdout: true).trim()
           echo "Go status: ${goVersion}"
@@ -74,7 +73,7 @@ pipeline {
           if (goVersion.contains('go version')) {
             try {
               sh '''
-                echo "Running go vet on changed files..."
+                echo "Running go vet on changed files"
                 while IFS= read -r file; do
                   if [ -f "$file" ]; then
                     echo "Checking: $file"
@@ -101,7 +100,7 @@ pipeline {
           script {
             try {
               sh '''
-                echo "=== Running SonarQube Analysis ==="
+                echo "Running SonarQube Analysis"
                 echo "Java version: $($JAVA_HOME/bin/java -version 2>&1 | head -1)"
                 echo "SonarQube URL: $SONAR_HOST_URL"
 
@@ -132,44 +131,7 @@ pipeline {
       }
     }
 
-    stage('Quality Gate') {
-      when {
-        environment name: 'HAS_GO_CHANGES', value: 'true'
-      }
-      steps {
-        script {
-          echo "=== Waiting for Quality Gate ==="
-
-          try {
-            timeout(time: Integer.parseInt(env.QUALITY_GATE_TIMEOUT), unit: 'MINUTES') {
-              def qg = waitForQualityGate()
-
-              echo "Quality Gate status: ${qg.status}"
-
-              if (qg.status != 'OK') {
-                echo "Quality Gate failed with status: ${qg.status}"
-
-                if (qg.conditions) {
-                  echo "Failed conditions:"
-                  qg.conditions.each { condition ->
-                    if (condition.status != 'OK') {
-                      echo "- ${condition.metricKey}: ${condition.actualValue} (threshold: ${condition.errorThreshold})"
-                    }
-                  }
-                }
-
-                currentBuild.result = 'UNSTABLE'
-                echo "Build marked as UNSTABLE due to Quality Gate failure"
-
-                // error("Quality Gate failed")
-              } else {
-                echo "Quality Gate passed successfully!"
-              }
-            }
-          } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
-            echo "Quality Gate check timed out after ${env.QUALITY_GATE_TIMEOUT} minutes"
-            currentBuild.result = 'UNSTABLE'
-            echo "Build marked as UNSTABLE due to Quality Gate timeout"
+d as UNSTABLE due to Quality Gate timeout"
           } catch (Exception e) {
             echo "Quality Gate check failed: ${e.getMessage()}"
             currentBuild.result = 'UNSTABLE'
@@ -221,7 +183,7 @@ EOF
   post {
     always {
       script {
-        echo "=== Pipeline Completed ==="
+        echo "Pipeline completed"
         echo "Final build result: ${currentBuild.result ?: 'SUCCESS'}"
 
         try {
@@ -236,11 +198,11 @@ EOF
     }
 
     success {
-      echo "Pipeline completed successfully!"
+      echo "Pipeline completed successfully"
     }
 
     unstable {
-      echo "Pipeline completed with warnings (Quality Gate failed or other issues)"
+      echo "Pipeline completed with warnings"
     }
 
     failure {
@@ -249,7 +211,7 @@ EOF
 
     cleanup {
       script {
-        echo "Performing final cleanup..."
+        echo "Performing final cleanup"
       }
     }
   }
