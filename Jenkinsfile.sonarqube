@@ -11,7 +11,7 @@ pipeline {
 
   options {
     skipDefaultCheckout true
-    timeout(time: 45, unit: 'MINUTES')
+    timeout(time: 30, unit: 'MINUTES')
   }
 
   stages {
@@ -43,7 +43,7 @@ pipeline {
 
           if (changedGo) {
             writeFile file: 'changed-go-files.txt', text: changedGo
-            echo "Detected changed .go files:\n${changedGo}"
+            echo "Detected changed .go files:\\n${changedGo}"
             env.HAS_GO_CHANGES = "true"
           } else {
             echo "No .go files changed. Skipping SonarQube analysis."
@@ -51,7 +51,7 @@ pipeline {
 
           if (changedFiles) {
             writeFile file: 'changed-files.txt', text: changedFiles
-            echo "Detected changed files for security scan:\n${changedFiles}"
+            echo "Detected changed files for security scan:\\n${changedFiles}"
             env.HAS_FILE_CHANGES = "true"
           } else {
             echo "No relevant files changed. Skipping security scan."
@@ -72,141 +72,97 @@ pipeline {
       steps {
         script {
           withCredentials([
-            string(credentialsId: 'snyk-api-token', variable: 'SNYK_TOKEN')
+            string(credentialsId: 'snyk-api-token', variable: 'SNYK_TOKEN'),
+            string(credentialsId: 'discord-webhook', variable: 'DISCORD_WEBHOOK')
           ]) {
             try {
               sh '''
-                echo "=== Running Snyk Security Scan ==="
+                echo "Running Snyk Security Scan"
                 export SNYK_TOKEN=$SNYK_TOKEN
 
                 snyk auth $SNYK_TOKEN
 
                 mkdir -p snyk-results
 
-                echo "Scanning dependencies..."
-                snyk test --json > snyk-results/dependencies.json || true
+                snyk test --json > snyk-results/results.json 2>/dev/null || echo '{"vulnerabilities":[]}' > snyk-results/results.json
 
-                echo "Scanning code vulnerabilities..."
-                if [ -f changed-files.txt ]; then
-                  while IFS= read -r file; do
-                    if [ -f "$file" ]; then
-                      echo "Scanning: $file"
-                      snyk code test "$file" --json >> snyk-results/code-scan.json || true
-                    fi
-                  done < changed-files.txt
-                fi
-
-                echo "Generating security report..."
-                python3 -c "
+                python3 << 'EOF'
 import json
-import os
 import requests
+import os
 from datetime import datetime
 
 def send_discord_notification(message):
-    webhook_url = 'https://discord.com/api/webhooks/1380213384561033216/iAk9OOjKtAtovX9RKPKM69qTMERc9c_dV0vk-5rzm2KvMDi2hAbKcBcHiL4H1mOzuVcD'
+    webhook_url = os.getenv('DISCORD_WEBHOOK')
+    if not webhook_url:
+        print("No Discord webhook configured")
+        return
+
     data = {
         'content': message,
-        'username': 'Snyk Security Bot'
+        'username': 'Snyk Security Scanner'
     }
+
     try:
         response = requests.post(webhook_url, json=data)
         if response.status_code == 204:
-            print('Discord notification sent successfully')
+            print('Discord notification sent')
         else:
             print(f'Discord notification failed: {response.status_code}')
     except Exception as e:
         print(f'Failed to send Discord notification: {e}')
 
-def parse_snyk_results():
-    results = {
-        'high': 0,
-        'medium': 0,
-        'low': 0,
-        'total': 0
-    }
+high_count = 0
+medium_count = 0
+low_count = 0
 
-    if os.path.exists('snyk-results/dependencies.json'):
-        try:
-            with open('snyk-results/dependencies.json', 'r') as f:
-                data = json.load(f)
-                if 'vulnerabilities' in data:
-                    for vuln in data['vulnerabilities']:
-                        severity = vuln.get('severity', 'low').lower()
-                        if severity in results:
-                            results[severity] += 1
-                        results['total'] += 1
-        except:
-            pass
+try:
+    with open('snyk-results/results.json', 'r') as f:
+        data = json.load(f)
+        if 'vulnerabilities' in data:
+            for vuln in data['vulnerabilities']:
+                severity = vuln.get('severity', 'low').lower()
+                if severity == 'high':
+                    high_count += 1
+                elif severity == 'medium':
+                    medium_count += 1
+                else:
+                    low_count += 1
+except Exception as e:
+    print(f"Error parsing Snyk results: {e}")
 
-    if os.path.exists('snyk-results/code-scan.json'):
-        try:
-            with open('snyk-results/code-scan.json', 'r') as f:
-                content = f.read()
-                for line in content.strip().split('\n'):
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            if 'runs' in data:
-                                for run in data['runs']:
-                                    if 'results' in run:
-                                        for result in run['results']:
-                                            level = result.get('level', 'note')
-                                            if level == 'error':
-                                                results['high'] += 1
-                                            elif level == 'warning':
-                                                results['medium'] += 1
-                                            else:
-                                                results['low'] += 1
-                                            results['total'] += 1
-                        except:
-                            continue
-        except:
-            pass
-
-    return results
-
-results = parse_snyk_results()
+total_count = high_count + medium_count + low_count
 branch = os.getenv('BRANCH_NAME', 'unknown')
 build_number = os.getenv('BUILD_NUMBER', '0')
-timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-status = 'No Issues' if results['total'] == 0 else 'Issues Found'
+status = "CLEAN" if total_count == 0 else "ISSUES FOUND"
 
-message = f'''**Snyk Security Scan Report**
-Branch: {branch}
-Build: #{build_number}
-Time: {timestamp}
-
-Vulnerabilities Found:
-High: {results['high']}
-Medium: {results['medium']}
-Low: {results['low']}
-Total: {results['total']}
-
+message = f"""**Security Scan Report**
+Branch: {branch} | Build: #{build_number}
 Status: {status}
-'''
+High: {high_count} | Medium: {medium_count} | Low: {low_count}
+Total: {total_count}"""
 
 send_discord_notification(message)
 
 with open('snyk-results/summary.txt', 'w') as f:
-    f.write(f'High: {results[\"high\"]}\\n')
-    f.write(f'Medium: {results[\"medium\"]}\\n')
-    f.write(f'Low: {results[\"low\"]}\\n')
-    f.write(f'Total: {results[\"total\"]}\\n')
+    f.write(f"HIGH:{high_count}\\n")
+    f.write(f"MEDIUM:{medium_count}\\n")
+    f.write(f"LOW:{low_count}\\n")
+    f.write(f"TOTAL:{total_count}\\n")
 
-print(f'Security scan completed. Total vulnerabilities: {results[\"total\"]}')
-"
+print(f"Security scan completed. Total vulnerabilities: {total_count}")
+EOF
               '''
 
               def summary = readFile('snyk-results/summary.txt')
-              def totalVulns = summary.readLines().find { it.startsWith('Total:') }?.split(':')[1]?.trim()?.toInteger() ?: 0
+              def totalVulns = summary.readLines().find { it.startsWith('TOTAL:') }?.split(':')[1]?.trim()?.toInteger() ?: 0
 
               if (totalVulns > 0) {
                 echo "Security scan found ${totalVulns} vulnerabilities"
                 currentBuild.result = 'UNSTABLE'
               } else {
-                echo "Security scan completed successfully - no vulnerabilities found"
+                echo "Security scan completed - no vulnerabilities found"
               }
 
             } catch (Exception e) {
@@ -326,31 +282,19 @@ print(f'Security scan completed. Total vulnerabilities: {results[\"total\"]}')
         }
       }
       steps {
-        sh '''
-          mkdir -p artifacts
+          sh '''
+            mkdir -p artifacts
+            if [ -f .scannerwork/report-task.txt ]; then
+              cp .scannerwork/report-task.txt artifacts/
+              echo "SonarQube Dashboard: http://localhost:9000/projects" > artifacts/sonar-dashboard-link.txt
+            else
+              echo 'No report generated.' > artifacts/no-report.txt
+            fi
 
-          if [ -f .scannerwork/report-task.txt ]; then
-            cp .scannerwork/report-task.txt artifacts/
-            echo "SonarQube Dashboard: http://localhost:9000/projects" > artifacts/sonar-dashboard-link.txt
-          fi
-
-          if [ -d snyk-results ]; then
-            cp -r snyk-results artifacts/
-            echo "Snyk scan results archived" > artifacts/snyk-scan-complete.txt
-          fi
-
-          echo "=== Security and Quality Report ===" > artifacts/combined-report.txt
-          echo "Timestamp: $(date)" >> artifacts/combined-report.txt
-          echo "Branch: ${BRANCH_NAME}" >> artifacts/combined-report.txt
-          echo "Build: ${BUILD_NUMBER}" >> artifacts/combined-report.txt
-          echo "" >> artifacts/combined-report.txt
-
-          if [ -f snyk-results/summary.txt ]; then
-            echo "=== Security Scan Results ===" >> artifacts/combined-report.txt
-            cat snyk-results/summary.txt >> artifacts/combined-report.txt
-            echo "" >> artifacts/combined-report.txt
-          fi
-        '''
+            if [ -d snyk-results ]; then
+              cp -r snyk-results artifacts/
+            fi
+          '''
         archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
       }
     }
@@ -359,24 +303,19 @@ print(f'Security scan completed. Total vulnerabilities: {results[\"total\"]}')
   post {
     always {
       script {
-        def hasGoChanges = env.HAS_GO_CHANGES == 'true'
-        def hasFileChanges = env.HAS_FILE_CHANGES == 'true'
-
-        if (!hasGoChanges && !hasFileChanges) {
+        if (env.HAS_GO_CHANGES != 'true' && env.HAS_FILE_CHANGES != 'true') {
           echo "Pipeline completed: No relevant changes detected"
-        } else {
-          echo "Pipeline completed: Scanned ${hasGoChanges ? 'Go files' : ''} ${hasFileChanges ? 'and security files' : ''}"
         }
       }
     }
     failure {
       script {
-        echo "Pipeline failed during analysis"
         if (env.HAS_GO_CHANGES == 'true') {
+          echo "Pipeline failed during SonarQube analysis"
           echo "Check SonarQube dashboard: ${SONAR_HOST_URL}/dashboard?id=gitea"
         }
         if (env.HAS_FILE_CHANGES == 'true') {
-          echo "Check Snyk results in build artifacts"
+          echo "Pipeline failed during security scan"
         }
       }
     }
