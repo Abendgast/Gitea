@@ -76,7 +76,6 @@ pipeline {
             string(credentialsId: 'discord-webhook', variable: 'DISCORD_WEBHOOK')
           ]) {
             try {
-              // Перевірка наявності Snyk
               sh '''
                 echo "Checking Snyk installation..."
                 which snyk || { echo "Snyk not found in PATH"; exit 1; }
@@ -87,15 +86,12 @@ pipeline {
                 echo "Running Snyk Security Scan"
                 export SNYK_TOKEN=$SNYK_TOKEN
 
-                # Аутентифікація
                 snyk auth $SNYK_TOKEN
 
                 mkdir -p snyk-results
 
-                # Запуск сканування з кращою обробкою помилок
                 snyk test --json > snyk-results/results.json 2>/dev/null || {
                   echo "Snyk test completed with findings or warnings"
-                  # Якщо файл не створився, створюємо порожній
                   if [ ! -f snyk-results/results.json ]; then
                     echo '{"vulnerabilities":[]}' > snyk-results/results.json
                   fi
@@ -150,7 +146,6 @@ except FileNotFoundError:
     print("Results file not found")
 except json.JSONDecodeError as e:
     print(f"Error parsing JSON: {e}")
-    # Спробуємо прочитати файл як текст для діагностики
     try:
         with open('snyk-results/results.json', 'r') as f:
             content = f.read()
@@ -199,7 +194,6 @@ EOF
             } catch (Exception e) {
               echo "Snyk scan failed: ${e.getMessage()}"
 
-              // Відправляємо повідомлення про помилку в Discord
               withCredentials([string(credentialsId: 'discord-webhook', variable: 'DISCORD_WEBHOOK')]) {
                 sh '''
                   python3 << 'EOF'
