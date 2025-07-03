@@ -4,7 +4,7 @@ pipeline {
   }
 
   environment {
-    SONAR_HOST_URL = 'http://sonarqube:9000'
+    SONAR_HOST_URL = 'http://localhost:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
     JAVA_HOME = '/opt/java/openjdk'
   }
@@ -76,15 +76,30 @@ pipeline {
             string(credentialsId: 'discord-webhook', variable: 'DISCORD_WEBHOOK')
           ]) {
             try {
+              // Перевірка наявності Snyk
+              sh '''
+                echo "Checking Snyk installation..."
+                which snyk || { echo "Snyk not found in PATH"; exit 1; }
+                snyk --version || { echo "Snyk version check failed"; exit 1; }
+              '''
+
               sh '''
                 echo "Running Snyk Security Scan"
                 export SNYK_TOKEN=$SNYK_TOKEN
 
+                # Аутентифікація
                 snyk auth $SNYK_TOKEN
 
                 mkdir -p snyk-results
 
-                snyk test --json > snyk-results/results.json 2>/dev/null || echo '{"vulnerabilities":[]}' > snyk-results/results.json
+                # Запуск сканування з кращою обробкою помилок
+                snyk test --json > snyk-results/results.json 2>/dev/null || {
+                  echo "Snyk test completed with findings or warnings"
+                  # Якщо файл не створився, створюємо порожній
+                  if [ ! -f snyk-results/results.json ]; then
+                    echo '{"vulnerabilities":[]}' > snyk-results/results.json
+                  fi
+                }
 
                 python3 << 'EOF'
 import json
@@ -106,9 +121,10 @@ def send_discord_notification(message):
     try:
         response = requests.post(webhook_url, json=data)
         if response.status_code == 204:
-            print('Discord notification sent')
+            print('Discord notification sent successfully')
         else:
             print(f'Discord notification failed: {response.status_code}')
+            print(f'Response: {response.text}')
     except Exception as e:
         print(f'Failed to send Discord notification: {e}')
 
@@ -128,21 +144,36 @@ try:
                     medium_count += 1
                 else:
                     low_count += 1
+        else:
+            print("No vulnerabilities section found in results")
+except FileNotFoundError:
+    print("Results file not found")
+except json.JSONDecodeError as e:
+    print(f"Error parsing JSON: {e}")
+    # Спробуємо прочитати файл як текст для діагностики
+    try:
+        with open('snyk-results/results.json', 'r') as f:
+            content = f.read()
+            print(f"File content: {content[:500]}...")
+    except Exception as fe:
+        print(f"Could not read file: {fe}")
 except Exception as e:
-    print(f"Error parsing Snyk results: {e}")
+    print(f"Error processing Snyk results: {e}")
 
 total_count = high_count + medium_count + low_count
 branch = os.getenv('BRANCH_NAME', 'unknown')
 build_number = os.getenv('BUILD_NUMBER', '0')
 
 status = "CLEAN" if total_count == 0 else "ISSUES FOUND"
+status_emoji = "✅" if total_count == 0 else "⚠️"
 
-message = f"""**Security Scan Report**
+message = f"""{status_emoji} **Security Scan Report**
 Branch: {branch} | Build: #{build_number}
 Status: {status}
 High: {high_count} | Medium: {medium_count} | Low: {low_count}
 Total: {total_count}"""
 
+print(f"Sending notification: {message}")
 send_discord_notification(message)
 
 with open('snyk-results/summary.txt', 'w') as f:
@@ -159,7 +190,7 @@ EOF
               def totalVulns = summary.readLines().find { it.startsWith('TOTAL:') }?.split(':')[1]?.trim()?.toInteger() ?: 0
 
               if (totalVulns > 0) {
-                echo "Security scan found ${totalVulns} vulnerabilities"
+                echo "Security scan found ${totalVulns} vulnerabilities - marking as UNSTABLE"
                 currentBuild.result = 'UNSTABLE'
               } else {
                 echo "Security scan completed - no vulnerabilities found"
@@ -167,6 +198,26 @@ EOF
 
             } catch (Exception e) {
               echo "Snyk scan failed: ${e.getMessage()}"
+
+              // Відправляємо повідомлення про помилку в Discord
+              withCredentials([string(credentialsId: 'discord-webhook', variable: 'DISCORD_WEBHOOK')]) {
+                sh '''
+                  python3 << 'EOF'
+import requests
+import os
+
+webhook_url = os.getenv('DISCORD_WEBHOOK')
+if webhook_url:
+    message = f"🚨 **Snyk Scan Failed**\\nBranch: {os.getenv('BRANCH_NAME', 'unknown')}\\nBuild: #{os.getenv('BUILD_NUMBER', '0')}\\nError: Snyk tool not accessible"
+    try:
+        response = requests.post(webhook_url, json={'content': message, 'username': 'Snyk Security Scanner'})
+        print(f"Discord notification sent: {response.status_code}")
+    except Exception as e:
+        print(f"Failed to send Discord notification: {e}")
+EOF
+                '''
+              }
+
               currentBuild.result = 'UNSTABLE'
             }
           }
@@ -286,13 +337,15 @@ EOF
             mkdir -p artifacts
             if [ -f .scannerwork/report-task.txt ]; then
               cp .scannerwork/report-task.txt artifacts/
-              echo "SonarQube Dashboard: http://localhost:9000/projects" > artifacts/sonar-dashboard-link.txt
+              echo "SonarQube Dashboard: ${SONAR_HOST_URL}/projects" > artifacts/sonar-dashboard-link.txt
             else
-              echo 'No report generated.' > artifacts/no-report.txt
+              echo 'No SonarQube report generated.' > artifacts/no-sonar-report.txt
             fi
 
             if [ -d snyk-results ]; then
               cp -r snyk-results artifacts/
+            else
+              echo 'No Snyk results generated.' > artifacts/no-snyk-results.txt
             fi
           '''
         archiveArtifacts artifacts: 'artifacts/**', fingerprint: true
@@ -316,6 +369,14 @@ EOF
         }
         if (env.HAS_FILE_CHANGES == 'true') {
           echo "Pipeline failed during security scan"
+        }
+      }
+    }
+    success {
+      script {
+        echo "Pipeline completed successfully"
+        if (currentBuild.result == 'UNSTABLE') {
+          echo "Build marked as UNSTABLE due to security findings or quality gate issues"
         }
       }
     }
