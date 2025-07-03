@@ -4,7 +4,7 @@ pipeline {
   }
 
   environment {
-    SONAR_HOST_URL = 'http://localhost:9000'
+    SONAR_HOST_URL = 'http://sonarqube:9000'
     SONAR_SCANNER_OPTS = "-Xmx512m"
     JAVA_HOME = '/opt/java/openjdk'
   }
