@@ -50,11 +50,13 @@ pipeline {
       }
     }
 
-    stage('Test Image') {
-      steps {
-        sh "docker run --rm ${IMAGE_NAME}:${VERSION_TAG} /app/gitea/gitea --version"
-      }
+stage('Test Image') {
+  steps {
+    script {
+      sh "docker run --rm --entrypoint='' ${IMAGE_NAME}:${VERSION_TAG} /app/gitea/gitea --version"
     }
+  }
+}
 
     stage('Tag for ECR') {
       when {
