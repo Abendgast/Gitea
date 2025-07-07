@@ -2,7 +2,7 @@ pipeline {
   agent {
     label 'docker-agent'
   }
-////
+
   parameters {
     booleanParam(
       name: 'PUSH_TO_ECR',
@@ -44,7 +44,7 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh "cp /devops-infra/gitea/Dockerfile ."
+        sh "cp /host-infra/gitea/Dockerfile."
         sh "docker build -t ${IMAGE_NAME}:${VERSION_TAG} ."
       }
     }
