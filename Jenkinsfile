@@ -45,6 +45,7 @@ pipeline {
     stage('Build Docker Image') {
       steps {
         sh "cp /host-infra/gitea/Dockerfile ."
+        sh "cp -r /host-infra/gitea/scripts ."
         sh "docker build -t ${IMAGE_NAME}:${VERSION_TAG} ."
       }
     }
