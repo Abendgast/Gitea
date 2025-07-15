@@ -2,8 +2,8 @@ pipeline {
     agent any
     
     environment {
-        AWS_DEFAULT_REGION = 'us-east-1'
-        ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com'
+        AWS_DEFAULT_REGION = "${env.AWS_DEFAULT_REGION ?: 'us-east-1'}"
+        ECR_REGISTRY = "${env.ECR_REPOSITORY_URL ? env.ECR_REPOSITORY_URL.split('/')[0] : '680833125636.dkr.ecr.us-east-1.amazonaws.com'}"
         ECR_REPOSITORY = 'gitea-app'
         IMAGE_TAG = "${BUILD_NUMBER}-${GIT_COMMIT.substring(0,7)}"
     }
@@ -18,7 +18,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Build Docker image
+                    echo "Building Docker image with tag: ${IMAGE_TAG}"
                     sh """
                         docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
                         docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_REPOSITORY}:latest
