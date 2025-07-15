@@ -1,31 +1,79 @@
 pipeline {
-  agent any
-  environment {
-    ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com'
-    IMAGE_NAME = 'gitea-app'
-  }
-  stages {
-    stage('Login to ECR') {
-      steps {
-        sh '''
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ECR_REGISTRY
-        '''
-      }
+    agent any
+    
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'
+        ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPOSITORY = 'gitea-app'
+        IMAGE_TAG = "${BUILD_NUMBER}-${GIT_COMMIT.substring(0,7)}"
     }
-    stage('Build Docker Image') {
-      steps {
-        sh '''
-          docker build -t $IMAGE_NAME:latest .
-          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/$IMAGE_NAME:latest
-        '''
-      }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build Docker image
+                    sh """
+                        docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
+                        docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_REPOSITORY}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Login to ECR') {
+            steps {
+                script {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                    """
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                        docker tag ${ECR_REPOSITORY}:latest ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+                        
+                        docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                        docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Clean up') {
+            steps {
+                script {
+                    sh """
+                        docker rmi ${ECR_REPOSITORY}:${IMAGE_TAG} || true
+                        docker rmi ${ECR_REPOSITORY}:latest || true
+                        docker rmi ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG} || true
+                        docker rmi ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest || true
+                    """
+                }
+            }
+        }
     }
-    stage('Push to ECR') {
-      steps {
-        sh '''
-          docker push $ECR_REGISTRY/$IMAGE_NAME:latest
-        '''
-      }
+    
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "Successfully pushed image to ECR: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+        }
+        failure {
+            echo "Pipeline failed. Please check the logs."
+        }
     }
-  }
 }
