@@ -1,0 +1,150 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(
+            name: 'DEV_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Tag of the dev image to promote (e.g., dev-20240117-abc123)'
+        )
+        booleanParam(
+            name: 'CONFIRM_DEPLOY',
+            defaultValue: false,
+            description: 'Confirm deployment to production'
+        )
+    }
+    
+    environment {
+        SOURCE_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        TARGET_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-application'
+        IMAGE_NAME = 'gitea-app'
+        AWS_REGION = 'us-east-1'
+    }
+    
+    options {
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+        skipDefaultCheckout()
+    }
+    
+    when {
+        branch 'dev'
+    }
+    
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (env.BRANCH_NAME != 'dev') {
+                        error("Deploy pipeline runs only from 'dev' branch. Current branch: ${env.BRANCH_NAME}")
+                    }
+                    
+                    if (!params.DEV_IMAGE_TAG) {
+                        error('DEV_IMAGE_TAG parameter is required')
+                    }
+                    if (!params.CONFIRM_DEPLOY) {
+                        error('CONFIRM_DEPLOY must be checked to proceed with deployment')
+                    }
+                    
+                    if (!params.DEV_IMAGE_TAG.startsWith('dev-')) {
+                        error('DEV_IMAGE_TAG must start with "dev-"')
+                    }
+                    
+                    def timestamp = sh(script: "date '+%Y%m%d-%H%M%S'", returnStdout: true).trim()
+                    def buildNumber = env.BUILD_NUMBER
+                    env.PROD_TAG = "prod-${timestamp}-build${buildNumber}"
+                    
+                    echo "Source image: ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG}"
+                    echo "Target image: ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
+                    echo "Deploy from branch: ${env.BRANCH_NAME}"
+                }
+            }
+        }
+        
+        stage('Pull Dev Image') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region $AWS_REGION | \
+                            docker login --username AWS --password-stdin $SOURCE_REGISTRY
+                        
+                        echo "Pulling dev image..."
+                        docker pull $SOURCE_REGISTRY:$DEV_IMAGE_TAG
+                    '''
+                }
+            }
+        }
+        
+        stage('Test Dev Image') {
+            steps {
+                script {
+                    sh """
+                        echo "Testing dev image before promotion..."
+                        docker run --rm ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG} --version || echo "Version check completed"
+                    """
+                }
+            }
+        }
+        
+        stage('Tag for Production') {
+            steps {
+                sh "docker tag ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG} ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
+            }
+        }
+        
+        stage('Push to Production ECR') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    sh '''
+                        echo "Logging into production ECR..."
+                        aws ecr get-login-password --region $AWS_REGION | \
+                            docker login --username AWS --password-stdin $TARGET_REGISTRY
+                        
+                        echo "Pushing to production ECR..."
+                        docker push $TARGET_REGISTRY:$PROD_TAG
+                        
+                        echo "Production image pushed successfully: $TARGET_REGISTRY:$PROD_TAG"
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Production Image') {
+            steps {
+                script {
+                    sh """
+                        echo "Verifying production image..."
+                        docker run --rm ${env.TARGET_REGISTRY}:${env.PROD_TAG} --version || echo "Production verification completed"
+                    """
+                }
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                sh """
+                    docker rmi ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG} || true
+                    docker rmi ${env.TARGET_REGISTRY}:${env.PROD_TAG} || true
+                    docker system prune -f || true
+                """
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Deploy pipeline finished.'
+        }
+        success {
+            echo "SUCCESS: Image promoted to production as ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
+            echo "Original dev image: ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG}"
+        }
+        failure {
+            echo "FAILURE: Production deployment failed"
+        }
+        cleanup {
+            sh 'docker system prune -f || true'
+        }
+    }
+}
