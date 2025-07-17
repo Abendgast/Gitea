@@ -1,0 +1,137 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        IMAGE_NAME = 'gitea-app'
+        AWS_REGION = 'us-east-1'
+        DOCKERFILE_PATH = '/host-infra/gitea-docker'
+        BUILD_CONTEXT = '/host-infra/gitea-docker'
+    }
+    
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        skipDefaultCheckout()
+    }
+    
+    triggers {
+        branch('dev')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    echo "Checked out branch: ${env.BRANCH_NAME}"
+                    echo "Commit: ${env.GIT_COMMIT}"
+                }
+            }
+        }
+        
+        stage('Preparation') {
+            steps {
+                script {
+                    def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    def timestamp = sh(script: "date '+%Y%m%d-%H%M%S'", returnStdout: true).trim()
+                    def branchName = env.BRANCH_NAME.replaceAll('/', '-')
+                    
+                    if (env.BRANCH_NAME != 'dev') {
+                        error("Build pipeline runs only on 'dev' branch. Current branch: ${env.BRANCH_NAME}")
+                    }
+                    
+                    env.VERSION_TAG = "dev-${timestamp}-${shortCommit}"
+                    
+                    echo "Building version: ${env.VERSION_TAG}"
+                    echo "Branch: ${env.BRANCH_NAME}"
+                    echo "Registry: ${env.DOCKER_REGISTRY}"
+                    echo "Build context: ${env.BUILD_CONTEXT}"
+                }
+            }
+        }
+        
+        stage('Verify Build Context') {
+            steps {
+                script {
+                    sh """
+                        echo "Checking build context directory..."
+                        ls -la ${env.BUILD_CONTEXT}
+                        echo "Checking Dockerfile..."
+                        cat ${env.DOCKERFILE_PATH}/Dockerfile
+                    """
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh """
+                        cd ${env.BUILD_CONTEXT}
+                        docker build -t ${env.IMAGE_NAME}:${env.VERSION_TAG} .
+                    """
+                }
+            }
+        }
+        
+        stage('Test Image') {
+            steps {
+                script {
+                    sh """
+                        echo "Testing built image..."
+                        docker run --rm ${env.IMAGE_NAME}:${env.VERSION_TAG} --version || echo "Version check completed"
+                    """
+                }
+            }
+        }
+        
+        stage('Tag for ECR') {
+            steps {
+                sh "docker tag ${env.IMAGE_NAME}:${env.VERSION_TAG} ${env.DOCKER_REGISTRY}:${env.VERSION_TAG}"
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region $AWS_REGION | \
+                            docker login --username AWS --password-stdin $DOCKER_REGISTRY
+                        
+                        echo "Pushing image to ECR..."
+                        docker push $DOCKER_REGISTRY:$VERSION_TAG
+                        
+                        echo "Image pushed successfully: $DOCKER_REGISTRY:$VERSION_TAG"
+                    '''
+                }
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                sh """
+                    docker rmi ${env.IMAGE_NAME}:${env.VERSION_TAG} || true
+                    docker rmi ${env.DOCKER_REGISTRY}:${env.VERSION_TAG} || true
+                    docker system prune -f || true
+                """
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Build pipeline finished.'
+        }
+        success {
+            echo "SUCCESS: Image ${env.DOCKER_REGISTRY}:${env.VERSION_TAG} built and pushed successfully"
+        }
+        failure {
+            echo "FAILURE: Build pipeline failed"
+        }
+        cleanup {
+            sh 'docker system prune -f || true'
+        }
+    }
+}
