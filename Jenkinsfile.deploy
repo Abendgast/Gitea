@@ -2,10 +2,40 @@ pipeline {
     agent any
 
     parameters {
-        string(
+        extendedChoice(
             name: 'DEV_IMAGE_TAG',
-            defaultValue: '',
-            description: 'Dev image tag to promote'
+            type: 'PT_SINGLE_SELECT',
+            description: 'Select dev image tag to promote',
+            multiSelectDelimiter: ',',
+            groovyScript: '''
+                import com.amazonaws.services.ecr.AmazonECRClientBuilder
+                import com.amazonaws.services.ecr.model.ListImagesRequest
+                import com.amazonaws.services.ecr.model.ImageIdentifier
+                import com.amazonaws.regions.Regions
+
+                try {
+                    def ecrClient = AmazonECRClientBuilder.standard()
+                        .withRegion(Regions.US_EAST_1)
+                        .build()
+
+                    def request = new ListImagesRequest()
+                        .withRepositoryName('gitea-app')
+                        .withFilter(new com.amazonaws.services.ecr.model.ListImagesFilter()
+                            .withTagStatus('TAGGED'))
+
+                    def result = ecrClient.listImages(request)
+
+                    def tags = result.imageIds
+                        .findAll { it.imageTag && it.imageTag.startsWith('dev-') }
+                        .collect { it.imageTag }
+                        .sort { a, b -> b.compareTo(a) } // Sort descending (newest first)
+                        .take(20) // Limit to 20 most recent
+
+                    return tags
+                } catch (Exception e) {
+                    return ["Error: ${e.message}"]
+                }
+            '''
         )
         booleanParam(
             name: 'CONFIRM_DEPLOY',
@@ -45,6 +75,31 @@ pipeline {
 
                     echo "Promoting: ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG}"
                     echo "Target: ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
+                }
+            }
+        }
+
+        stage('Verify Source Image') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    script {
+                        def imageExists = sh(
+                            script: """
+                                aws ecr describe-images \
+                                    --repository-name gitea-app \
+                                    --image-ids imageTag=${params.DEV_IMAGE_TAG} \
+                                    --region ${env.AWS_REGION} \
+                                    --query 'imageDetails[0].imageTags' \
+                                    --output text 2>/dev/null || echo "NOT_FOUND"
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (imageExists == "NOT_FOUND") {
+                            error("Image ${params.DEV_IMAGE_TAG} not found in ECR")
+                        }
+                        echo "Source image verified: ${params.DEV_IMAGE_TAG}"
+                    }
                 }
             }
         }

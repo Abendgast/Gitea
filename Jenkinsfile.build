@@ -17,12 +17,11 @@ pipeline {
         githubPush()
     }
 
-    when {
-        branch 'dev'
-    }
-
     stages {
         stage('Checkout') {
+            when {
+                branch 'dev'
+            }
             steps {
                 checkout scm
                 script {
@@ -33,6 +32,9 @@ pipeline {
         }
 
         stage('Build Docker Image') {
+            when {
+                branch 'dev'
+            }
             steps {
                 script {
                     def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
@@ -52,6 +54,9 @@ pipeline {
         }
 
         stage('Push to ECR') {
+            when {
+                branch 'dev'
+            }
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
@@ -67,6 +72,9 @@ pipeline {
         }
 
         stage('Cleanup') {
+            when {
+                branch 'dev'
+            }
             steps {
                 sh """
                     docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
@@ -78,7 +86,13 @@ pipeline {
 
     post {
         success {
-            echo "SUCCESS: Dev image built and pushed: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+            script {
+                if (env.BRANCH_NAME == 'dev') {
+                    echo "SUCCESS: Dev image built and pushed: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                } else {
+                    echo "Skipped: Not dev branch"
+                }
+            }
         }
         failure {
             echo "FAILURE: Build failed"
