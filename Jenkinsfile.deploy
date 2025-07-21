@@ -45,7 +45,7 @@ pipeline {
     }
 
     environment {
-        REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
         AWS_REGION = 'us-east-1'
     }
 
@@ -72,8 +72,8 @@ pipeline {
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
                     env.PROD_TAG = "prod-${timestamp}"
 
-                    echo "Promoting: ${env.REGISTRY}:${params.DEV_IMAGE_TAG}"
-                    echo "Target: ${env.REGISTRY}:${env.PROD_TAG}"
+                    echo "Tagging existing image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
+                    echo "With production tag: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
                 }
             }
         }
@@ -103,31 +103,28 @@ pipeline {
             }
         }
 
-        stage('Pull and Tag') {
+        stage('Pull and Retag') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
                         aws ecr get-login-password --region $AWS_REGION | \
-                            docker login --username AWS --password-stdin $REGISTRY
+                            docker login --username AWS --password-stdin $ECR_REGISTRY
 
-                        docker pull $REGISTRY:$DEV_IMAGE_TAG
+                        docker pull $ECR_REGISTRY:$DEV_IMAGE_TAG
 
-                        docker tag $REGISTRY:$DEV_IMAGE_TAG $REGISTRY:$PROD_TAG
+                        docker tag $ECR_REGISTRY:$DEV_IMAGE_TAG $ECR_REGISTRY:$PROD_TAG
                     '''
                 }
             }
         }
 
-        stage('Push to Production ECR') {
+        stage('Push Production Tag') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
-                        aws ecr get-login-password --region $AWS_REGION | \
-                            docker login --username AWS --password-stdin $REGISTRY
+                        docker push $ECR_REGISTRY:$PROD_TAG
 
-                        docker push $REGISTRY:$PROD_TAG
-
-                        echo "Production image: $REGISTRY:$PROD_TAG"
+                        echo "Production image: $ECR_REGISTRY:$PROD_TAG"
                     '''
                 }
             }
@@ -136,8 +133,8 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh """
-                    docker rmi ${env.REGISTRY}:${params.DEV_IMAGE_TAG} || true
-                    docker rmi ${env.REGISTRY}:${env.PROD_TAG} || true
+                    docker rmi ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG} || true
+                    docker rmi ${env.ECR_REGISTRY}:${env.PROD_TAG} || true
                 """
             }
         }
@@ -146,8 +143,8 @@ pipeline {
     post {
         success {
             echo "SUCCESS: Image promoted to production"
-            echo "Production image: ${env.REGISTRY}:${env.PROD_TAG}"
-            echo "From dev image: ${env.REGISTRY}:${params.DEV_IMAGE_TAG}"
+            echo "Production image: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
+            echo "From dev image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
         }
         failure {
             echo "FAILURE: Production deployment failed"
