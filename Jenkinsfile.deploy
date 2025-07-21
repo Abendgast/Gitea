@@ -45,8 +45,7 @@ pipeline {
     }
 
     environment {
-        SOURCE_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
-        TARGET_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-application'
+        REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
         AWS_REGION = 'us-east-1'
     }
 
@@ -73,8 +72,8 @@ pipeline {
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
                     env.PROD_TAG = "prod-${timestamp}"
 
-                    echo "Promoting: ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG}"
-                    echo "Target: ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
+                    echo "Promoting: ${env.REGISTRY}:${params.DEV_IMAGE_TAG}"
+                    echo "Target: ${env.REGISTRY}:${env.PROD_TAG}"
                 }
             }
         }
@@ -109,11 +108,11 @@ pipeline {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
                         aws ecr get-login-password --region $AWS_REGION | \
-                            docker login --username AWS --password-stdin $SOURCE_REGISTRY
+                            docker login --username AWS --password-stdin $REGISTRY
 
-                        docker pull $SOURCE_REGISTRY:$DEV_IMAGE_TAG
+                        docker pull $REGISTRY:$DEV_IMAGE_TAG
 
-                        docker tag $SOURCE_REGISTRY:$DEV_IMAGE_TAG $TARGET_REGISTRY:$PROD_TAG
+                        docker tag $REGISTRY:$DEV_IMAGE_TAG $REGISTRY:$PROD_TAG
                     '''
                 }
             }
@@ -124,11 +123,11 @@ pipeline {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
                         aws ecr get-login-password --region $AWS_REGION | \
-                            docker login --username AWS --password-stdin $TARGET_REGISTRY
+                            docker login --username AWS --password-stdin $REGISTRY
 
-                        docker push $TARGET_REGISTRY:$PROD_TAG
+                        docker push $REGISTRY:$PROD_TAG
 
-                        echo "Production image: $TARGET_REGISTRY:$PROD_TAG"
+                        echo "Production image: $REGISTRY:$PROD_TAG"
                     '''
                 }
             }
@@ -137,8 +136,8 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh """
-                    docker rmi ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG} || true
-                    docker rmi ${env.TARGET_REGISTRY}:${env.PROD_TAG} || true
+                    docker rmi ${env.REGISTRY}:${params.DEV_IMAGE_TAG} || true
+                    docker rmi ${env.REGISTRY}:${env.PROD_TAG} || true
                 """
             }
         }
@@ -147,8 +146,8 @@ pipeline {
     post {
         success {
             echo "SUCCESS: Image promoted to production"
-            echo "Production image: ${env.TARGET_REGISTRY}:${env.PROD_TAG}"
-            echo "From dev image: ${env.SOURCE_REGISTRY}:${params.DEV_IMAGE_TAG}"
+            echo "Production image: ${env.REGISTRY}:${env.PROD_TAG}"
+            echo "From dev image: ${env.REGISTRY}:${params.DEV_IMAGE_TAG}"
         }
         failure {
             echo "FAILURE: Production deployment failed"
