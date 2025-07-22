@@ -104,7 +104,6 @@ pipeline {
             }
         }
 
-
         stage('Pull and Retag') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
