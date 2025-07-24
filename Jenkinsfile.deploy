@@ -2,40 +2,15 @@ pipeline {
     agent any
 
     parameters {
-        extendedChoice(
+        string(
+            name: 'IMAGE_NAME',
+            defaultValue: 'gitea-app',
+            description: 'Docker image name (e.g., gitea-app, my-service)'
+        )
+        string(
             name: 'DEV_IMAGE_TAG',
-            type: 'PT_SINGLE_SELECT',
-            description: 'Select dev image tag to promote',
-            multiSelectDelimiter: ',',
-            groovyScript: '''
-                import com.amazonaws.services.ecr.AmazonECRClientBuilder
-                import com.amazonaws.services.ecr.model.ListImagesRequest
-                import com.amazonaws.services.ecr.model.ImageIdentifier
-                import com.amazonaws.regions.Regions
-
-                try {
-                    def ecrClient = AmazonECRClientBuilder.standard()
-                        .withRegion(Regions.US_EAST_1)
-                        .build()
-
-                    def request = new ListImagesRequest()
-                        .withRepositoryName('gitea-app')
-                        .withFilter(new com.amazonaws.services.ecr.model.ListImagesFilter()
-                            .withTagStatus('TAGGED'))
-
-                    def result = ecrClient.listImages(request)
-
-                    def tags = result.imageIds
-                        .findAll { it.imageTag && it.imageTag.startsWith('dev-') }
-                        .collect { it.imageTag }
-                        .sort { a, b -> b.compareTo(a) } // Sort descending (newest first)
-                        .take(20) // Limit to 20 most recent
-
-                    return tags
-                } catch (Exception e) {
-                    return ["Error: ${e.message}"]
-                }
-            '''
+            defaultValue: '',
+            description: 'Dev image tag to promote (e.g., dev-202501241030-a1b2c3d)'
         )
         booleanParam(
             name: 'CONFIRM_DEPLOY',
@@ -44,9 +19,8 @@ pipeline {
         )
     }
 
-
     environment {
-        ECR_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com'
         AWS_REGION = 'us-east-1'
     }
 
@@ -70,11 +44,13 @@ pipeline {
                         error('DEV_IMAGE_TAG must start with "dev-"')
                     }
 
+                    env.ECR_REGISTRY = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}"
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
                     env.PROD_TAG = "prod-${timestamp}"
 
-                    echo "Tagging existing image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
-                    echo "With production tag: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
+                    echo "Image name: ${params.IMAGE_NAME}"
+                    echo "Source image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
+                    echo "Target prod image: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
                 }
             }
         }
@@ -86,7 +62,7 @@ pipeline {
                         def imageExists = sh(
                             script: """
                                 aws ecr describe-images \
-                                    --repository-name gitea-app \
+                                    --repository-name ${params.IMAGE_NAME} \
                                     --image-ids imageTag=${params.DEV_IMAGE_TAG} \
                                     --region ${env.AWS_REGION} \
                                     --query 'imageDetails[0].imageTags' \
@@ -96,9 +72,9 @@ pipeline {
                         ).trim()
 
                         if (imageExists == "NOT_FOUND") {
-                            error("Image ${params.DEV_IMAGE_TAG} not found in ECR")
+                            error("Image ${params.DEV_IMAGE_TAG} not found in ECR repository ${params.IMAGE_NAME}")
                         }
-                        echo "Source image verified: ${params.DEV_IMAGE_TAG}"
+                        echo "Source image verified: ${params.DEV_IMAGE_TAG} in ${params.IMAGE_NAME}"
                     }
                 }
             }
@@ -108,11 +84,14 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
+                        echo "Logging into ECR..."
                         aws ecr get-login-password --region $AWS_REGION | \
-                            docker login --username AWS --password-stdin $ECR_REGISTRY
+                            docker login --username AWS --password-stdin $DOCKER_REGISTRY
 
+                        echo "Pulling dev image: $ECR_REGISTRY:$DEV_IMAGE_TAG"
                         docker pull $ECR_REGISTRY:$DEV_IMAGE_TAG
 
+                        echo "Creating prod tag: $ECR_REGISTRY:$PROD_TAG"
                         docker tag $ECR_REGISTRY:$DEV_IMAGE_TAG $ECR_REGISTRY:$PROD_TAG
                     '''
                 }
@@ -123,9 +102,12 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
+                        echo "Pushing production image: $ECR_REGISTRY:$PROD_TAG"
                         docker push $ECR_REGISTRY:$PROD_TAG
 
-                        echo "Production image: $ECR_REGISTRY:$PROD_TAG"
+                        echo "SUCCESS: Production image pushed!"
+                        echo "Dev image (unchanged): $ECR_REGISTRY:$DEV_IMAGE_TAG"
+                        echo "Prod image (new): $ECR_REGISTRY:$PROD_TAG"
                     '''
                 }
             }
@@ -134,8 +116,10 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh """
+                    echo "Cleaning up local images..."
                     docker rmi ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG} || true
                     docker rmi ${env.ECR_REGISTRY}:${env.PROD_TAG} || true
+                    echo "Local cleanup completed"
                 """
             }
         }
@@ -143,12 +127,29 @@ pipeline {
 
     post {
         success {
-            echo "SUCCESS: Image promoted to production"
-            echo "Production image: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
-            echo "From dev image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
+            echo """
+=== PROMOTION SUCCESSFUL ===
+Image Name: ${params.IMAGE_NAME}
+Dev image (unchanged): ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}
+Prod image (new): ${env.ECR_REGISTRY}:${env.PROD_TAG}
+
+Ready for production deployment!
+"""
         }
         failure {
-            echo "FAILURE: Production deployment failed"
+            echo """
+=== PROMOTION FAILED ===
+Image Name: ${params.IMAGE_NAME}
+Attempted promotion of: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}
+Check logs above for details.
+"""
+        }
+        always {
+            sh """
+                echo "Final cleanup..."
+                docker rmi ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG} || true
+                docker rmi ${env.ECR_REGISTRY}:${env.PROD_TAG} || true
+            """
         }
     }
 }
