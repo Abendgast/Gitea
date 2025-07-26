@@ -1,213 +1,368 @@
-# Gitea
+# 🚀 Gitea Infrastructure on AWS
 
-[![](https://github.com/go-gitea/gitea/actions/workflows/release-nightly.yml/badge.svg?branch=main)](https://github.com/go-gitea/gitea/actions/workflows/release-nightly.yml?query=branch%3Amain "Release Nightly")
-[![](https://img.shields.io/discord/322538954119184384.svg?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/Gitea "Join the Discord chat at https://discord.gg/Gitea")
-[![](https://goreportcard.com/badge/code.gitea.io/gitea)](https://goreportcard.com/report/code.gitea.io/gitea "Go Report Card")
-[![](https://pkg.go.dev/badge/code.gitea.io/gitea?status.svg)](https://pkg.go.dev/code.gitea.io/gitea "GoDoc")
-[![](https://img.shields.io/github/release/go-gitea/gitea.svg)](https://github.com/go-gitea/gitea/releases/latest "GitHub release")
-[![](https://www.codetriage.com/go-gitea/gitea/badges/users.svg)](https://www.codetriage.com/go-gitea/gitea "Help Contribute to Open Source")
-[![](https://opencollective.com/gitea/tiers/backers/badge.svg?label=backers&color=brightgreen)](https://opencollective.com/gitea "Become a backer/sponsor of gitea")
-[![](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT "License: MIT")
-[![Contribute with Gitpod](https://img.shields.io/badge/Contribute%20with-Gitpod-908a85?logo=gitpod&color=green)](https://gitpod.io/#https://github.com/go-gitea/gitea)
-[![](https://badges.crowdin.net/gitea/localized.svg)](https://translate.gitea.com "Crowdin")
+<div align="center">
 
-[繁體中文](./README.zh-tw.md) | [简体中文](./README.zh-cn.md)
+![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=for-the-badge&logo=amazon-aws&logoColor=white)
+![Terraform](https://img.shields.io/badge/terraform-%235835CC.svg?style=for-the-badge&logo=terraform&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
+![Gitea](https://img.shields.io/badge/Gitea-34495E?style=for-the-badge&logo=gitea&logoColor=5D9425)
+![Jenkins](https://img.shields.io/badge/jenkins-%232C5263.svg?style=for-the-badge&logo=jenkins&logoColor=white)
 
-## Purpose
+*Production-ready Gitea Git hosting platform deployed on AWS with automated CI/CD*
 
-The goal of this project is to make the easiest, fastest, and most
-painless way of setting up a self-hosted Git service.
+</div>
 
-As Gitea is written in Go, it works across **all** the platforms and
-architectures that are supported by Go, including Linux, macOS, and
-Windows on x86, amd64, ARM and PowerPC architectures.
-This project has been
-[forked](https://blog.gitea.com/welcome-to-gitea/) from
-[Gogs](https://gogs.io) since November of 2016, but a lot has changed.
+---
 
-For online demonstrations, you can visit [demo.gitea.com](https://demo.gitea.com).
+## 📋 Table of Contents
 
-For accessing free Gitea service (with a limited number of repositories), you can visit [gitea.com](https://gitea.com/user/login).
+- [🧩 Infrastructure Components](#-infrastructure-components)
+- [🔧 Application Details](#-application-details)
+- [✨ Key Features](#-key-features)
+- [🚀 Quick Start](#-quick-start)
+- [📊 Monitoring](#-monitoring)
+- [🔒 Security](#-security)
 
-To quickly deploy your own dedicated Gitea instance on Gitea Cloud, you can start a free trial at [cloud.gitea.com](https://cloud.gitea.com).
 
-## Documentation
+---
 
-You can find comprehensive documentation on our official [documentation website](https://docs.gitea.com/).
+## 🧩 Infrastructure Components
 
-It includes installation, administration, usage, development, contributing guides, and more to help you get started and explore all features effectively.
+### 🐳 **Container Orchestration**
 
-If you have any suggestions or would like to contribute to it, you can visit the [documentation repository](https://gitea.com/gitea/docs)
+| Service | Purpose | Key Features |
+|---------|---------|--------------|
+| **Amazon ECS** | Container orchestration platform | Fargate serverless, auto-scaling, health checks |
+| **Amazon ECR** | Private Docker registry | Vulnerability scanning, lifecycle policies, secure access |
+| **ECS Service** | Manages container deployment | Rolling updates, desired count management |
 
-## Building
+### 💾 **Storage & Database**
 
-From the root of the source tree, run:
+<table>
+<tr>
+<td width="50%">
 
-    TAGS="bindata" make build
+**🗄️ Amazon EFS**
+- **Shared persistent storage**
+- Multi-AZ availability
+- Encryption in transit/rest
+- POSIX-compliant file system
 
-or if SQLite support is required:
+</td>
+<td width="50%">
 
-    TAGS="bindata sqlite sqlite_unlock_notify" make build
+**🐘 Amazon RDS PostgreSQL**
+- **Managed database service**
+- Automated backups
+- Multi-AZ deployment
+- Performance monitoring
 
-The `build` target is split into two sub-targets:
+</td>
+</tr>
+</table>
 
-- `make backend` which requires [Go Stable](https://go.dev/dl/), the required version is defined in [go.mod](/go.mod).
-- `make frontend` which requires [Node.js LTS](https://nodejs.org/en/download/) or greater.
+### 🔐 **Security & Configuration**
 
-Internet connectivity is required to download the go and npm modules. When building from the official source tarballs which include pre-built frontend files, the `frontend` target will not be triggered, making it possible to build without Node.js.
+> **AWS Systems Manager Parameter Store**
+> 
+> Centralized, encrypted storage for:
+> - Database credentials
+> - API keys and secrets
+> - Application configuration
+> - Environment variables
 
-More info: https://docs.gitea.com/installation/install-from-source
+### 🌐 **Load Balancing & SSL**
 
-## Using
+```yaml
+Traffic Flow:
+Internet → Route 53 → Application Load Balancer → ECS Containers
+         ↓
+    SSL Certificate (ACM) → HTTPS Encryption
+```
 
-After building, a binary file named `gitea` will be generated in the root of the source tree by default. To run it, use:
+- **Application Load Balancer**: Health checks, traffic distribution
+- **AWS Certificate Manager**: Automated SSL certificate management
+- **Route 53**: DNS management with failover capabilities
 
-    ./gitea web
+### ⚙️ **CI/CD Pipeline**
 
-> [!NOTE]
-> If you're interested in using our APIs, we have experimental support with [documentation](https://docs.gitea.com/api).
+<div align="center">
 
-## Contributing
+**Jenkins on EC2**
 
-Expected workflow is: Fork -> Patch -> Push -> Pull Request
+![Jenkins Flow](https://img.shields.io/badge/Source%20Code-Gitea-green?style=flat-square) → ![Build](https://img.shields.io/badge/Build-Jenkins-blue?style=flat-square) → ![Registry](https://img.shields.io/badge/Push-ECR-orange?style=flat-square) → ![Deploy](https://img.shields.io/badge/Deploy-ECS-red?style=flat-square)
 
-> [!NOTE]
->
-> 1. **YOU MUST READ THE [CONTRIBUTORS GUIDE](CONTRIBUTING.md) BEFORE STARTING TO WORK ON A PULL REQUEST.**
-> 2. If you have found a vulnerability in the project, please write privately to **security@gitea.io**. Thanks!
+</div>
 
-## Translating
+---
 
-[![Crowdin](https://badges.crowdin.net/gitea/localized.svg)](https://translate.gitea.com)
+## 🔧 Application Details
 
-Translations are done through [Crowdin](https://translate.gitea.com). If you want to translate to a new language ask one of the managers in the Crowdin project to add a new language there.
+### 🦊 **Gitea Configuration**
 
-You can also just create an issue for adding a language or ask on discord on the #translation channel. If you need context or find some translation issues, you can leave a comment on the string or ask on Discord. For general translation questions there is a section in the docs. Currently a bit empty but we hope to fill it as questions pop up.
+```yaml
+Runtime Environment:
+  Platform: ECS Fargate
+  Port: 3000 (HTTP)
+  Database: PostgreSQL with SSL
+  Storage: EFS mounted at /data
+  Authentication: Parameter Store secrets
+  
+Features:
+  ✅ Git over HTTPS
+  ✅ Web interface
+  ✅ Issue tracking
+  ✅ Pull requests
+  ✅ SSH 
+```
 
-Get more information from [documentation](https://docs.gitea.com/contributing/localization).
+### 🔨 **Jenkins Configuration**
 
-## Official and Third-Party Projects
+```yaml
+Infrastructure:
+  Instance: EC2 t3.medium (Ubuntu 22.04)
+  Container: Jenkins LTS in Docker
+  Backup: Automated daily S3 sync
+  
+Capabilities:
+  ✅ Docker-in-Docker builds
+  ✅ ECR integration
+  ✅ AWS CLI access
+  ✅ Automatic restoration
+```
 
-We provide an official [go-sdk](https://gitea.com/gitea/go-sdk), a CLI tool called [tea](https://gitea.com/gitea/tea) and an [action runner](https://gitea.com/gitea/act_runner) for Gitea Action.
 
-We maintain a list of Gitea-related projects at [gitea/awesome-gitea](https://gitea.com/gitea/awesome-gitea), where you can discover more third-party projects, including SDKs, plugins, themes, and more.
 
-## Communication
+---
 
-[![](https://img.shields.io/discord/322538954119184384.svg?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/Gitea "Join the Discord chat at https://discord.gg/Gitea")
+## ✨ Key Features
 
-If you have questions that are not covered by the [documentation](https://docs.gitea.com/), you can get in contact with us on our [Discord server](https://discord.gg/Gitea) or create a post in the [discourse forum](https://forum.gitea.com/).
+<table>
+<tr>
+<td width="50%">
 
-## Authors
+### 🔄 **High Availability**
+- ✅ Multi-AZ deployment
+- ✅ Auto-scaling containers
+- ✅ Database redundancy
+- ✅ Load balancer health checks
 
-- [Maintainers](https://github.com/orgs/go-gitea/people)
-- [Contributors](https://github.com/go-gitea/gitea/graphs/contributors)
-- [Translators](options/locale/TRANSLATORS)
+### 🔒 **Enterprise Security**
+- ✅ Encrypted storage & transit
+- ✅ IAM role-based access
+- ✅ Private container registry
+- ✅ Network segmentation
 
-## Backers
+</td>
+<td width="50%">
 
-Thank you to all our backers! 🙏 [[Become a backer](https://opencollective.com/gitea#backer)]
+### 📈 **Scalability**
+- ✅ Serverless containers (Fargate)
+- ✅ Auto-growing file system
+- ✅ Database auto-scaling
+- ✅ Elastic load balancing
 
-<a href="https://opencollective.com/gitea#backers" target="_blank"><img src="https://opencollective.com/gitea/backers.svg?width=890"></a>
+### 💾 **Backup & Recovery**
+- ✅ Automated Jenkins backups
+- ✅ RDS point-in-time recovery
+- ✅ EFS built-in redundancy
+- ✅ Infrastructure as Code
 
-## Sponsors
+</td>
+</tr>
+</table>
 
-Support this project by becoming a sponsor. Your logo will show up here with a link to your website. [[Become a sponsor](https://opencollective.com/gitea#sponsor)]
+---
 
-<a href="https://opencollective.com/gitea/sponsor/0/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/0/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/1/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/1/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/2/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/2/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/3/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/3/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/4/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/4/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/5/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/5/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/6/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/6/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/7/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/7/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/8/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/8/avatar.svg"></a>
-<a href="https://opencollective.com/gitea/sponsor/9/website" target="_blank"><img src="https://opencollective.com/gitea/sponsor/9/avatar.svg"></a>
+## 🚀 Quick Start
 
-## FAQ
+### Prerequisites
 
-**How do you pronounce Gitea?**
+```bash
+# Required tools
+terraform --version  # >= 1.0
+aws --version        # AWS CLI configured
+```
 
-Gitea is pronounced [/ɡɪ’ti:/](https://youtu.be/EM71-2uDAoY) as in "gi-tea" with a hard g.
-
-**Why is this not hosted on a Gitea instance?**
-
-We're [working on it](https://github.com/go-gitea/gitea/issues/1029).
-
-**Where can I find the security patches?**
-
-In the [release log](https://github.com/go-gitea/gitea/releases) or the [change log](https://github.com/go-gitea/gitea/blob/main/CHANGELOG.md), search for the keyword `SECURITY` to find the security patches.
-
-## License
-
-This project is licensed under the MIT License.
-See the [LICENSE](https://github.com/go-gitea/gitea/blob/main/LICENSE) file
-for the full license text.
-
-## Further information
+### Deployment Steps
 
 <details>
-<summary>Looking for an overview of the interface? Check it out!</summary>
+<summary><b>1️⃣ Deploy S3 Storage (Jenkins Backups)</b></summary>
 
-### Login/Register Page
-
-![Login](https://dl.gitea.com/screenshots/login.png)
-![Register](https://dl.gitea.com/screenshots/register.png)
-
-### User Dashboard
-
-![Home](https://dl.gitea.com/screenshots/home.png)
-![Issues](https://dl.gitea.com/screenshots/issues.png)
-![Pull Requests](https://dl.gitea.com/screenshots/pull_requests.png)
-![Milestones](https://dl.gitea.com/screenshots/milestones.png)
-
-### User Profile
-
-![Profile](https://dl.gitea.com/screenshots/user_profile.png)
-
-### Explore
-
-![Repos](https://dl.gitea.com/screenshots/explore_repos.png)
-![Users](https://dl.gitea.com/screenshots/explore_users.png)
-![Orgs](https://dl.gitea.com/screenshots/explore_orgs.png)
-
-### Repository
-
-![Home](https://dl.gitea.com/screenshots/repo_home.png)
-![Commits](https://dl.gitea.com/screenshots/repo_commits.png)
-![Branches](https://dl.gitea.com/screenshots/repo_branches.png)
-![Labels](https://dl.gitea.com/screenshots/repo_labels.png)
-![Milestones](https://dl.gitea.com/screenshots/repo_milestones.png)
-![Releases](https://dl.gitea.com/screenshots/repo_releases.png)
-![Tags](https://dl.gitea.com/screenshots/repo_tags.png)
-
-#### Repository Issue
-
-![List](https://dl.gitea.com/screenshots/repo_issues.png)
-![Issue](https://dl.gitea.com/screenshots/repo_issue.png)
-
-#### Repository Pull Requests
-
-![List](https://dl.gitea.com/screenshots/repo_pull_requests.png)
-![Pull Request](https://dl.gitea.com/screenshots/repo_pull_request.png)
-![File](https://dl.gitea.com/screenshots/repo_pull_request_file.png)
-![Commits](https://dl.gitea.com/screenshots/repo_pull_request_commits.png)
-
-#### Repository Actions
-
-![List](https://dl.gitea.com/screenshots/repo_actions.png)
-![Details](https://dl.gitea.com/screenshots/repo_actions_run.png)
-
-#### Repository Activity
-
-![Activity](https://dl.gitea.com/screenshots/repo_activity.png)
-![Contributors](https://dl.gitea.com/screenshots/repo_contributors.png)
-![Code Frequency](https://dl.gitea.com/screenshots/repo_code_frequency.png)
-![Recent Commits](https://dl.gitea.com/screenshots/repo_recent_commits.png)
-
-### Organization
-
-![Home](https://dl.gitea.com/screenshots/org_home.png)
-
+```bash
+cd jenkins-s3/
+terraform init
+terraform plan
+terraform apply
+```
 </details>
+
+<details>
+<summary><b>2️⃣ Deploy Gitea Infrastructure</b></summary>
+
+```bash
+cd ../gitea/
+terraform init
+terraform plan
+terraform apply
+# Note: Creates ECR, ECS, EFS, RDS, IAM roles
+```
+</details>
+
+<details>
+<summary><b>3️⃣ Deploy Load Balancer & SSL</b></summary>
+
+```bash
+cd ../gitea-alb/
+terraform init
+terraform plan
+terraform apply
+# Outputs: DNS name and HTTPS URL
+```
+</details>
+
+<details>
+<summary><b>4️⃣ Deploy Jenkins CI/CD</b></summary>
+
+```bash
+cd ../jenkins-ec2/
+terraform init
+terraform plan
+terraform apply
+# Outputs: Jenkins URL and SSH command
+```
+</details>
+
+### 🎉 **Access Your Services**
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| **Gitea** | `https://my-gitea.pp.ua` | Git hosting & web interface |
+| **Jenkins** | `http://jenkins-gitea.pp.ua:8080` | CI/CD pipeline management |
+
+---
+
+## 📊 Monitoring
+
+### CloudWatch Integration
+
+```yaml
+Monitoring Stack:
+  📈 Container Insights: ECS cluster metrics
+  📋 Log Groups: Centralized application logs  
+  🚨 Health Checks: ALB target health monitoring
+  📊 Custom Metrics: Database performance insights
+```
+
+### Key Metrics to Watch
+
+- ECS service CPU/Memory utilization
+- RDS connection count and query performance  
+- EFS throughput and IOPS
+- ALB response times and error rates
+
+---
+
+## 🔒 Security
+
+### 🛡️ **Security Best Practices Implemented**
+
+| Layer | Security Measures |
+|-------|------------------|
+| **Network** | VPC isolation, Security Groups, Private subnets |
+| **Data** | Encryption at rest (EFS, RDS, S3), SSL/TLS in transit |
+| **Access** | IAM roles, least privilege principle, no hardcoded secrets |
+| **Container** | Private ECR, vulnerability scanning, non-root users |
+
+### 🔐 **Secrets Management**
+
+All sensitive data is stored in **AWS Systems Manager Parameter Store**:
+- Database credentials (encrypted)
+- Application secrets and API keys
+- SSL certificates and domain configuration
+
+---
+
+<div align="center">
+
+### 💡 **Need Help?**
+
+[![Issues](https://img.shields.io/badge/Issues-GitHub-red?style=for-the-badge&logo=github)](../../issues)
+[![Documentation](https://img.shields.io/badge/Docs-AWS-orange?style=for-the-badge&logo=amazon-aws)](https://docs.aws.amazon.com/)
+[![Terraform](https://img.shields.io/badge/Terraform-Docs-purple?style=for-the-badge&logo=terraform)](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
+
+---
+
+**Built with ❤️ using AWS + Terraform + Open Source**
+
+*This infrastructure follows AWS Well-Architected Framework principles*
+
+</div># AWS Infrastructure for Gitea and Jenkins
+
+This infrastructure project provisions a complete AWS-based environment for running Gitea (a self-hosted Git service) and Jenkins (a CI/CD automation server) using Terraform. It includes container orchestration, persistent storage, secret management, backups, and secure public access via HTTPS.
+
+## 🗂️ Components Overview
+
+| Component          | Purpose                                                                 |
+|--------------------|-------------------------------------------------------------------------|
+| **ECS**            | Runs the Gitea container using AWS Fargate                              |
+| **ECR**            | Stores the custom Gitea container image                                 |
+| **EFS**            | Provides persistent, encrypted storage for Gitea                        |
+| **RDS**            | PostgreSQL backend for Gitea database                                   |
+| **S3**             | Stores Jenkins backups, versioned and encrypted                         |
+| **IAM**            | Grants EC2 and ECS access to needed services (S3, ECR, etc.)            |
+| **Parameter Store**| Holds all Gitea secrets and credentials securely                        |
+| **ALB + ACM**      | Public HTTPS access to Gitea via a load balancer and a self-signed cert |
+| **Route 53**       | DNS zone management and custom domain routing                           |
+| **EC2**            | Runs the Jenkins server via Docker, initialized via `user_data`         |
+
+---
+
+## 🚀 Gitea Deployment (ECS + Fargate)
+
+- Gitea runs inside a container defined in `task-definition.json`, hosted on **ECS Fargate**.
+- Application data is mounted via **EFS**, ensuring persistent `/data`.
+- Secrets like DB credentials and admin account info are securely pulled from **SSM Parameter Store**.
+- Public access is managed via **Application Load Balancer (ALB)** with:
+  - Automatic HTTP → HTTPS redirection
+  - Self-signed SSL certificate provisioned via **ACM**
+  - Domain mapping via **Route 53**
+
+---
+
+## 🔧 Jenkins Deployment (EC2 + Docker)
+
+- Jenkins runs in a Docker container on an **EC2 instance**, provisioned with:
+  - SSH access
+  - Docker and AWS CLI pre-installed
+  - Automatic restore from **S3** if backup is available
+- Daily backups are uploaded to **S3**, versioned and encrypted
+- EC2 instance uses an **IAM role** with permissions to read/write S3 and access ECR
+
+---
+
+## 🔐 Secrets Management (Parameter Store)
+
+Secrets are stored under `/gitea/` namespace and injected into the Gitea container at runtime:
+- Database host, user, password
+- Admin username, password, email
+- Security keys (e.g. `SECRET_KEY`, `INSTALL_LOCK`)
+
+---
+
+## 📦 S3 Usage
+
+- Bucket: `my-jenkins-storage`
+- Used to store and version Jenkins backup data
+- Public access is fully blocked
+- Server-side encryption is enforced with AES256
+
+---
+
+## 📌 Additional Notes
+
+- All services are deployed in `us-east-1`
+- Default VPC and subnets are used for quick setup
+- Jenkins can be accessed at `[http://<EC2_PUBLIC_IP>:8080](http://jenkins-gitea.pp.ua:8080`
+- Gitea is available at `https://my-gitea.pp.ua`
+
