@@ -5,12 +5,12 @@ pipeline {
         string(
             name: 'IMAGE_NAME',
             defaultValue: 'gitea-app',
-            description: 'Docker image name (e.g., gitea-app, my-service)'
+            description: 'ECR repository name (e.g., gitea-app, my-service)'
         )
         string(
-            name: 'DEV_IMAGE_TAG',
+            name: 'DEV_TAG',
             defaultValue: '',
-            description: 'Dev image tag to promote (e.g., dev-202501241030-a1b2c3d)'
+            description: 'Dev tag to promote (e.g., dev-202507241208-8cd8dc96a)'
         )
         booleanParam(
             name: 'CONFIRM_DEPLOY',
@@ -34,23 +34,27 @@ pipeline {
         stage('Validate Parameters') {
             steps {
                 script {
-                    if (!params.DEV_IMAGE_TAG) {
-                        error('DEV_IMAGE_TAG parameter is required')
+                    if (!params.DEV_TAG) {
+                        error('DEV_TAG parameter is required')
                     }
                     if (!params.CONFIRM_DEPLOY) {
                         error('CONFIRM_DEPLOY must be checked to proceed')
                     }
-                    if (!params.DEV_IMAGE_TAG.startsWith('dev-')) {
-                        error('DEV_IMAGE_TAG must start with "dev-"')
+                    if (!params.DEV_TAG.startsWith('dev-')) {
+                        error('DEV_TAG must start with "dev-"')
                     }
 
-                    env.ECR_REGISTRY = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}"
-                    def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
+                    def timestamp = sh(script: "date '+%Y%m%d%H%M%S'", returnStdout: true).trim()
                     env.PROD_TAG = "prod-${timestamp}"
 
-                    echo "Image name: ${params.IMAGE_NAME}"
-                    echo "Source image: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}"
-                    echo "Target prod image: ${env.ECR_REGISTRY}:${env.PROD_TAG}"
+                    env.SOURCE_IMAGE = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}:${params.DEV_TAG}"
+                    env.TARGET_IMAGE = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}:${env.PROD_TAG}"
+
+                    echo "Repository: ${params.IMAGE_NAME}"
+                    echo "Dev tag: ${params.DEV_TAG}"
+                    echo "Prod tag: ${env.PROD_TAG}"
+                    echo "Source: ${env.SOURCE_IMAGE}"
+                    echo "Target: ${env.TARGET_IMAGE}"
                 }
             }
         }
@@ -63,7 +67,7 @@ pipeline {
                             script: """
                                 aws ecr describe-images \
                                     --repository-name ${params.IMAGE_NAME} \
-                                    --image-ids imageTag=${params.DEV_IMAGE_TAG} \
+                                    --image-ids imageTag=${params.DEV_TAG} \
                                     --region ${env.AWS_REGION} \
                                     --query 'imageDetails[0].imageTags' \
                                     --output text 2>/dev/null || echo "NOT_FOUND"
@@ -72,15 +76,15 @@ pipeline {
                         ).trim()
 
                         if (imageExists == "NOT_FOUND") {
-                            error("Image ${params.DEV_IMAGE_TAG} not found in ECR repository ${params.IMAGE_NAME}")
+                            error("Image ${params.DEV_TAG} not found in ECR repository ${params.IMAGE_NAME}")
                         }
-                        echo "Source image verified: ${params.DEV_IMAGE_TAG} in ${params.IMAGE_NAME}"
+                        echo "Source image verified: ${env.SOURCE_IMAGE}"
                     }
                 }
             }
         }
 
-        stage('Pull and Retag') {
+        stage('Pull Dev Image') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
@@ -88,26 +92,42 @@ pipeline {
                         aws ecr get-login-password --region $AWS_REGION | \
                             docker login --username AWS --password-stdin $DOCKER_REGISTRY
 
-                        echo "Pulling dev image: $ECR_REGISTRY:$DEV_IMAGE_TAG"
-                        docker pull $ECR_REGISTRY:$DEV_IMAGE_TAG
-
-                        echo "Creating prod tag: $ECR_REGISTRY:$PROD_TAG"
-                        docker tag $ECR_REGISTRY:$DEV_IMAGE_TAG $ECR_REGISTRY:$PROD_TAG
+                        echo "Pulling dev image: $SOURCE_IMAGE"
+                        docker pull $SOURCE_IMAGE
                     '''
                 }
             }
         }
 
-        stage('Push Production Tag') {
+        stage('Create Prod Image (with unique metadata)') {
+            steps {
+                script {
+                    echo "Creating prod image with unique label to ensure different digest..."
+                    sh '''
+                        docker tag $SOURCE_IMAGE temp-prod-image:latest
+
+                        docker image inspect temp-prod-image:latest > /dev/null
+
+                        echo "Committing image with unique metadata..."
+                        docker container create --name temp_container temp-prod-image:latest > /dev/null
+                        TIMESTAMP=$(date +%s)
+                        docker commit \
+                            --change "LABEL build.ts=${TIMESTAMP}" \
+                            temp_container \
+                            $TARGET_IMAGE
+                        docker rm temp_container
+                        docker rmi temp-prod-image:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Push Production Image') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
-                        echo "Pushing production image: $ECR_REGISTRY:$PROD_TAG"
-                        docker push $ECR_REGISTRY:$PROD_TAG
-
-                        echo "SUCCESS: Production image pushed!"
-                        echo "Dev image (unchanged): $ECR_REGISTRY:$DEV_IMAGE_TAG"
-                        echo "Prod image (new): $ECR_REGISTRY:$PROD_TAG"
+                        echo "Pushing production image: $TARGET_IMAGE"
+                        docker push $TARGET_IMAGE
                     '''
                 }
             }
@@ -116,10 +136,8 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh """
-                    echo "Cleaning up local images..."
-                    docker rmi ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG} || true
-                    docker rmi ${env.ECR_REGISTRY}:${env.PROD_TAG} || true
-                    echo "Local cleanup completed"
+                    docker rmi ${env.SOURCE_IMAGE} || true
+                    docker rmi ${env.TARGET_IMAGE} || true
                 """
             }
         }
@@ -129,26 +147,22 @@ pipeline {
         success {
             echo """
 === PROMOTION SUCCESSFUL ===
-Image Name: ${params.IMAGE_NAME}
-Dev image (unchanged): ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}
-Prod image (new): ${env.ECR_REGISTRY}:${env.PROD_TAG}
+Repository: ${params.IMAGE_NAME}
 
-Ready for production deployment!
+Dev image (unchanged): ${env.SOURCE_IMAGE}
+Prod image (NEW, with unique label): ${env.TARGET_IMAGE}
 """
         }
         failure {
             echo """
 === PROMOTION FAILED ===
-Image Name: ${params.IMAGE_NAME}
-Attempted promotion of: ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG}
-Check logs above for details.
+Attempted promotion: ${params.IMAGE_NAME}:${params.DEV_TAG}
 """
         }
         always {
             sh """
-                echo "Final cleanup..."
-                docker rmi ${env.ECR_REGISTRY}:${params.DEV_IMAGE_TAG} || true
-                docker rmi ${env.ECR_REGISTRY}:${env.PROD_TAG} || true
+                docker rmi ${env.SOURCE_IMAGE} || true
+                docker rmi ${env.TARGET_IMAGE} || true
             """
         }
     }
