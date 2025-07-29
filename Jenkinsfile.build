@@ -13,6 +13,7 @@ pipeline {
         skipDefaultCheckout()
     }
 
+
     triggers {
         githubPush()
     }
