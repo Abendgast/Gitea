@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'golang:1.21-alpine'
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/bin/docker'
+        }
+    }
 
     environment {
         DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
@@ -20,6 +25,24 @@ pipeline {
     }
 
     stages {
+        stage('Install Dependencies') {
+            when {
+                branch 'dev'
+            }
+            steps {
+                sh '''
+                    # Встановлюємо додаткові пакети в Alpine
+                    apk add --no-cache git aws-cli
+
+                    # Встановлюємо SonarScanner
+                    wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+                    unzip -q sonar-scanner-cli-4.8.0.2856-linux.zip
+                    mv sonar-scanner-4.8.0.2856-linux /opt/sonar-scanner
+                    ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                '''
+            }
+        }
+
         stage('Checkout') {
             when {
                 branch 'dev'
@@ -79,6 +102,7 @@ pipeline {
             }
         }
 
+        // Решта stages залишаються без змін...
         stage('Run Tests') {
             when {
                 allOf {
