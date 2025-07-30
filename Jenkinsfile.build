@@ -150,16 +150,15 @@ pipeline {
                     sh '''
                         echo "Setting up SonarScanner..."
 
-                        # Повністю видаляємо старий SonarScanner
                         rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
                         rm -rf /tmp/sonar-scanner* || true
 
-                        echo "Installing SonarScanner 4.6.2..."
+                        echo "Installing SonarScanner 4.4.0 (compatible with Java 11)..."
                         (
                             cd /tmp
-                            curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.6.2.2472-linux.zip
+                            curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.4.0.2170-linux.zip
                             unzip -o sonar-scanner-cli.zip
-                            mv sonar-scanner-4.6.2.2472-linux /usr/local/sonar-scanner
+                            mv sonar-scanner-4.4.0.2170-linux /usr/local/sonar-scanner
                             ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
                             chmod +x /usr/local/bin/sonar-scanner
                             rm -f sonar-scanner-cli.zip
