@@ -1,10 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'golang:1.21-alpine'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/bin/docker'
-        }
-    }
+    agent any
 
     environment {
         DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
@@ -12,6 +7,7 @@ pipeline {
         AWS_REGION = 'us-east-1'
         SONAR_PROJECT_KEY = 'Abendgast_Gitea'
         SONAR_ORGANIZATION = 'abendgast'
+        PATH = "/usr/local/go/bin:${env.PATH}"
     }
 
     options {
@@ -25,24 +21,6 @@ pipeline {
     }
 
     stages {
-        stage('Install Dependencies') {
-            when {
-                branch 'dev'
-            }
-            steps {
-                sh '''
-                    # Встановлюємо додаткові пакети в Alpine
-                    apk add --no-cache git aws-cli
-
-                    # Встановлюємо SonarScanner
-                    wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
-                    unzip -q sonar-scanner-cli-4.8.0.2856-linux.zip
-                    mv sonar-scanner-4.8.0.2856-linux /opt/sonar-scanner
-                    ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-                '''
-            }
-        }
-
         stage('Checkout') {
             when {
                 branch 'dev'
@@ -53,7 +31,6 @@ pipeline {
                     echo "Building from dev branch"
                     echo "Commit: ${env.GIT_COMMIT}"
 
-                    // Отримуємо список змінених файлів
                     def changedFiles = sh(
                         script: '''
                             if [ "$GIT_PREVIOUS_COMMIT" != "" ] && [ "$GIT_PREVIOUS_COMMIT" != "$GIT_COMMIT" ]; then
@@ -68,7 +45,6 @@ pipeline {
                     env.CHANGED_FILES = changedFiles
                     echo "Changed files:\n${changedFiles}"
 
-                    // Перевіряємо чи є Go файли серед змінених
                     def hasGoFiles = sh(
                         script: 'echo "$CHANGED_FILES" | grep -E "\\.(go)$" || echo "false"',
                         returnStdout: true
@@ -89,6 +65,15 @@ pipeline {
             }
             steps {
                 sh '''
+                    if ! command -v go &> /dev/null; then
+                        echo "Installing Go..."
+                        cd /tmp
+                        wget -q https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+                        sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+                        rm go1.21.5.linux-amd64.tar.gz
+                    fi
+
+                    export PATH=/usr/local/go/bin:$PATH
                     go version
 
                     if [ -f "go.mod" ]; then
@@ -102,7 +87,6 @@ pipeline {
             }
         }
 
-        // Решта stages залишаються без змін...
         stage('Run Tests') {
             when {
                 allOf {
@@ -112,6 +96,7 @@ pipeline {
             }
             steps {
                 sh '''
+                    export PATH=/usr/local/go/bin:$PATH
                     echo "Running Go tests with coverage..."
 
                     go test -v -coverprofile=coverage.out ./...
@@ -136,6 +121,7 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     sh '''
+                        export PATH=/usr/local/go/bin:$PATH
                         echo "Preparing SonarCloud analysis..."
 
                         if [ ! -f "sonar-project.properties" ]; then
@@ -294,7 +280,6 @@ EOF
                 echo "📊 Pipeline execution completed"
                 echo "🕐 Duration: ${currentBuild.durationString}"
 
-                // Публікуємо test results якщо є
                 if (fileExists('**/test-results.xml')) {
                     publishTestResults([
                         testResultsPattern: '**/test-results.xml',
@@ -302,7 +287,6 @@ EOF
                     ])
                 }
 
-                // Очищуємо workspace від тимчасових файлів
                 sh '''
                     rm -f sonar-project.properties || true
                     rm -f coverage.out || true
