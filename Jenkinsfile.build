@@ -33,7 +33,7 @@ pipeline {
                     // Отримуємо список змінених файлів
                     def changedFiles = sh(
                         script: '''
-                            if [ "$GIT_PREVIOUS_COMMIT" != "" ]; then
+                            if [ "$GIT_PREVIOUS_COMMIT" != "" ] && [ "$GIT_PREVIOUS_COMMIT" != "$GIT_COMMIT" ]; then
                                 git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT
                             else
                                 git show --pretty="" --name-only HEAD
@@ -66,10 +66,16 @@ pipeline {
             }
             steps {
                 sh '''
+                    # Перевіряємо версію Go
+                    go version
+
                     # Встановлюємо залежності Go (якщо потрібно)
                     if [ -f "go.mod" ]; then
+                        echo "Installing Go dependencies..."
                         go mod download
                         go mod tidy
+                    else
+                        echo "No go.mod found, skipping dependency installation"
                     fi
                 '''
             }
@@ -84,11 +90,18 @@ pipeline {
             }
             steps {
                 sh '''
+                    echo "Running Go tests with coverage..."
+
                     # Запускаємо тести з coverage
                     go test -v -coverprofile=coverage.out ./...
 
-                    # Конвертуємо coverage в XML формат для SonarCloud
-                    go tool cover -func=coverage.out
+                    # Показуємо coverage summary
+                    if [ -f "coverage.out" ]; then
+                        echo "Coverage summary:"
+                        go tool cover -func=coverage.out
+                    else
+                        echo "No coverage file generated"
+                    fi
                 '''
             }
         }
@@ -103,13 +116,16 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     sh '''
+                        echo "Preparing SonarCloud analysis..."
+
                         # Створюємо sonar-project.properties якщо його немає
                         if [ ! -f "sonar-project.properties" ]; then
+                            echo "Creating sonar-project.properties..."
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
 sonar.sources=.
-sonar.exclusions=**/*_test.go,**/vendor/**,**/testdata/**
+sonar.exclusions=**/*_test.go,**/vendor/**,**/testdata/**,**/*.pb.go
 sonar.tests=.
 sonar.test.inclusions=**/*_test.go
 sonar.go.coverage.reportPaths=coverage.out
@@ -117,14 +133,16 @@ sonar.sourceEncoding=UTF-8
 EOF
                         fi
 
-                        # Запускаємо SonarCloud аналіз
+                        echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
+
+                        # Запускаємо SonarCloud аналіз для dev гілки (long-lived branch)
                         sonar-scanner \
                             -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                             -Dsonar.organization=${SONAR_ORGANIZATION} \
                             -Dsonar.host.url=https://sonarcloud.io \
                             -Dsonar.login=${SONAR_TOKEN} \
                             -Dsonar.scm.revision=${GIT_COMMIT} \
-                            -Dsonar.pullrequest.branch=${BRANCH_NAME} \
+                            -Dsonar.branch.name=${BRANCH_NAME} \
                             -Dsonar.go.coverage.reportPaths=coverage.out
                     '''
                 }
@@ -141,11 +159,16 @@ EOF
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     script {
+                        echo "Waiting for SonarCloud Quality Gate result..."
                         def qg = waitForQualityGate()
+
                         if (qg.status != 'OK') {
+                            echo "Quality Gate failed: ${qg.status}"
+                            echo "Check SonarCloud dashboard for details: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                             error "Pipeline aborted due to quality gate failure: ${qg.status}"
                         }
-                        echo "Quality Gate passed successfully!"
+
+                        echo "✅ Quality Gate passed successfully!"
                     }
                 }
             }
@@ -162,13 +185,16 @@ EOF
 
                     env.IMAGE_TAG = "dev-${timestamp}-${shortCommit}"
 
-                    echo "Building image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
-                    echo "Build context: current directory (from GitHub)"
+                    echo "Building Docker image..."
+                    echo "Image name: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+                    echo "Registry: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
 
                     sh """
                         docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
                         docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
                     """
+
+                    echo "✅ Docker image built successfully"
                 }
             }
         }
@@ -180,12 +206,14 @@ EOF
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
+                        echo "Logging into ECR..."
                         aws ecr get-login-password --region $AWS_REGION | \
                             docker login --username AWS --password-stdin $DOCKER_REGISTRY
 
+                        echo "Pushing image to ECR..."
                         docker push $DOCKER_REGISTRY:$IMAGE_TAG
 
-                        echo "Image pushed: $DOCKER_REGISTRY:$IMAGE_TAG"
+                        echo "✅ Image pushed successfully: $DOCKER_REGISTRY:$IMAGE_TAG"
                     '''
                 }
             }
@@ -197,11 +225,14 @@ EOF
             }
             steps {
                 sh """
+                    echo "Cleaning up local Docker images..."
                     docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
 
                     # Очищуємо тестові файли
                     rm -f coverage.out || true
+
+                    echo "✅ Cleanup completed"
                 """
             }
         }
@@ -211,33 +242,55 @@ EOF
         success {
             script {
                 if (env.BRANCH_NAME == 'dev') {
-                    def message = "SUCCESS: Dev image built and pushed: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    def message = "🎉 SUCCESS: Dev pipeline completed successfully"
+                    message += "\n📦 Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+
                     if (env.HAS_GO_CHANGES == 'true') {
                         message += "\n✅ SonarCloud quality gate passed"
+                        message += "\n🔍 View analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     } else {
                         message += "\n⏭️ No Go files changed, SonarCloud analysis skipped"
                     }
+
                     echo message
                 } else {
-                    echo "Skipped: Not dev branch"
+                    echo "ℹ️ Skipped: Not dev branch"
                 }
             }
         }
+
         failure {
             script {
-                def message = "FAILURE: Build failed"
+                def message = "❌ FAILURE: Dev pipeline failed"
+
                 if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\n❌ Check SonarCloud quality gate or tests"
+                    message += "\n🔍 Check SonarCloud quality gate: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
+                    message += "\n📋 Review test results and code quality issues"
                 }
+
                 echo message
             }
         }
+
         always {
-            // Публікуємо test results якщо є
-            publishTestResults([
-                testResultsPattern: '**/test-results.xml',
-                allowEmptyResults: true
-            ])
+            script {
+                echo "📊 Pipeline execution completed"
+                echo "🕐 Duration: ${currentBuild.durationString}"
+
+                // Публікуємо test results якщо є
+                if (fileExists('**/test-results.xml')) {
+                    publishTestResults([
+                        testResultsPattern: '**/test-results.xml',
+                        allowEmptyResults: true
+                    ])
+                }
+
+                // Очищуємо workspace від тимчасових файлів
+                sh '''
+                    rm -f sonar-project.properties || true
+                    rm -f coverage.out || true
+                '''
+            }
         }
     }
 }
