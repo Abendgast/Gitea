@@ -29,11 +29,12 @@ pipeline {
                 checkout scm
                 script {
                     echo "Building from dev branch"
+                    env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
                     echo "Commit: ${env.GIT_COMMIT}"
 
                     def changedFiles = sh(
                         script: '''
-                            if [ "$GIT_PREVIOUS_COMMIT" != "" ] && [ "$GIT_PREVIOUS_COMMIT" != "$GIT_COMMIT" ]; then
+                            if [ -n "$GIT_PREVIOUS_COMMIT" ]; then
                                 git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT
                             else
                                 git show --pretty="" --name-only HEAD
@@ -45,12 +46,8 @@ pipeline {
                     env.CHANGED_FILES = changedFiles
                     echo "Changed files:\n${changedFiles}"
 
-                    def hasGoFiles = sh(
-                        script: 'echo "$CHANGED_FILES" | grep -E "\\.(go)$" || echo "false"',
-                        returnStdout: true
-                    ).trim()
-
-                    env.HAS_GO_CHANGES = hasGoFiles != "false" ? "true" : "false"
+                    def hasGoFiles = changedFiles.contains('.go')
+                    env.HAS_GO_CHANGES = hasGoFiles ? "true" : "false"
                     echo "Has Go file changes: ${env.HAS_GO_CHANGES}"
                 }
             }
@@ -69,23 +66,23 @@ pipeline {
                         echo "Installing Go..."
                         cd /tmp
                         curl -L -o go1.21.5.linux-amd64.tar.gz https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-                        tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+                        sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
                         rm go1.21.5.linux-amd64.tar.gz
                         echo "Go installed successfully"
                     else
                         echo "Go already installed"
                     fi
 
-                    export PATH=/usr/local/go/bin:$PATH
                     go version
 
-                    if [ -f "go.mod" ]; then
-                        echo "Installing Go dependencies..."
-                        go mod download
-                        go mod tidy
-                    else
-                        echo "No go.mod found, skipping dependency installation"
+                    if [ ! -f "go.mod" ]; then
+                        echo "Initializing Go module..."
+                        go mod init gitea-app
                     fi
+
+                    echo "Installing Go dependencies..."
+                    go mod download
+                    go mod tidy
                 '''
             }
         }
@@ -99,8 +96,7 @@ pipeline {
             }
             steps {
                 sh '''
-                    export PATH=/usr/local/go/bin:$PATH
-                    echo "Running Go tests for changed files only..."
+                    echo "Running Go tests for changed files..."
 
                     changed_packages=""
                     for file in $CHANGED_FILES; do
@@ -147,7 +143,6 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     sh '''
-                        export PATH=/usr/local/go/bin:$PATH
                         echo "Preparing SonarCloud analysis..."
 
                         if [ ! -f "sonar-project.properties" ]; then
