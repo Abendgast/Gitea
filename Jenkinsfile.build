@@ -66,10 +66,7 @@ pipeline {
             }
             steps {
                 sh '''
-                    # Перевіряємо версію Go
-                    go version
 
-                    # Встановлюємо залежності Go (якщо потрібно)
                     if [ -f "go.mod" ]; then
                         echo "Installing Go dependencies..."
                         go mod download
