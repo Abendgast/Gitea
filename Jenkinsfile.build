@@ -188,7 +188,7 @@ pipeline {
                 }
             }
             steps {
-                withSonarQubeEnv('SonarCloud') {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         echo "Setting up SonarScanner with Java 17..."
 
@@ -235,6 +235,7 @@ EOF
 
                         echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
                         echo "Using Java: $JAVA_HOME"
+                        echo "Token length: ${#SONAR_TOKEN}"
 
                         # Запускаємо SonarScanner з правильним JAVA_HOME
                         JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
@@ -245,7 +246,8 @@ EOF
                             -Dsonar.scm.revision=${GIT_COMMIT} \
                             -Dsonar.branch.name=${BRANCH_NAME} \
                             -Dsonar.go.coverage.reportPaths=coverage.out \
-                            -Dsonar.java.binaries=. || echo "SonarCloud analysis completed with warnings"
+                            -Dsonar.java.binaries=. \
+                            -Dsonar.analysis.mode=publish || echo "SonarCloud analysis completed with warnings"
                     '''
                 }
             }
