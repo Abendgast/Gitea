@@ -217,20 +217,54 @@ pipeline {
                         )
                         echo "SonarScanner installed successfully"
 
-                        echo "Preparing SonarCloud analysis..."
+                        echo "Preparing SonarCloud analysis for changed files only..."
+
+                        # Створюємо список змінених файлів для SonarCloud
+                        changed_sources=""
+                        changed_tests=""
+
+                        for file in $CHANGED_FILES; do
+                            if echo "$file" | grep -E "\\.(go|js|ts|java|py|php|cs|cpp|c|h)$" > /dev/null; then
+                                if echo "$file" | grep "_test\\." > /dev/null; then
+                                    if [ -z "$changed_tests" ]; then
+                                        changed_tests="$file"
+                                    else
+                                        changed_tests="$changed_tests,$file"
+                                    fi
+                                else
+                                    if [ -z "$changed_sources" ]; then
+                                        changed_sources="$file"
+                                    else
+                                        changed_sources="$changed_sources,$file"
+                                    fi
+                                fi
+                            fi
+                        done
+
+                        echo "Changed source files: $changed_sources"
+                        echo "Changed test files: $changed_tests"
 
                         if [ ! -f "sonar-project.properties" ]; then
-                            echo "Creating sonar-project.properties..."
+                            echo "Creating sonar-project.properties for changed files..."
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
-sonar.sources=.
-sonar.exclusions=**/*_test.go,**/vendor/**,**/testdata/**,**/*.pb.go,Jenkinsfile*
-sonar.tests=.
-sonar.test.inclusions=**/*_test.go
-sonar.go.coverage.reportPaths=coverage.out
 sonar.sourceEncoding=UTF-8
 EOF
+
+                            # Додаємо тільки змінені файли до аналізу
+                            if [ -n "$changed_sources" ]; then
+                                echo "sonar.sources=$changed_sources" >> sonar-project.properties
+                            else
+                                echo "sonar.sources=." >> sonar-project.properties
+                                echo "sonar.exclusions=**/*" >> sonar-project.properties
+                            fi
+
+                            if [ -n "$changed_tests" ]; then
+                                echo "sonar.tests=$changed_tests" >> sonar-project.properties
+                            fi
+
+                            echo "sonar.go.coverage.reportPaths=coverage.out" >> sonar-project.properties
                         fi
 
                         echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
