@@ -5,14 +5,15 @@ pipeline {
         DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com/gitea-app'
         IMAGE_NAME = 'gitea-app'
         AWS_REGION = 'us-east-1'
+        SONAR_PROJECT_KEY = 'Abendgast_Gitea'
+        SONAR_ORGANIZATION = 'abendgast'
     }
 
     options {
         timestamps()
-        timeout(time: 15, unit: 'MINUTES')
+        timeout(time: 20, unit: 'MINUTES')
         skipDefaultCheckout()
     }
-
 
     triggers {
         githubPush()
@@ -28,6 +29,124 @@ pipeline {
                 script {
                     echo "Building from dev branch"
                     echo "Commit: ${env.GIT_COMMIT}"
+
+                    // Отримуємо список змінених файлів
+                    def changedFiles = sh(
+                        script: '''
+                            if [ "$GIT_PREVIOUS_COMMIT" != "" ]; then
+                                git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT
+                            else
+                                git show --pretty="" --name-only HEAD
+                            fi
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.CHANGED_FILES = changedFiles
+                    echo "Changed files:\n${changedFiles}"
+
+                    // Перевіряємо чи є Go файли серед змінених
+                    def hasGoFiles = sh(
+                        script: 'echo "$CHANGED_FILES" | grep -E "\\.(go)$" || echo "false"',
+                        returnStdout: true
+                    ).trim()
+
+                    env.HAS_GO_CHANGES = hasGoFiles != "false" ? "true" : "false"
+                    echo "Has Go file changes: ${env.HAS_GO_CHANGES}"
+                }
+            }
+        }
+
+        stage('Setup Go Environment') {
+            when {
+                allOf {
+                    branch 'dev'
+                    environment name: 'HAS_GO_CHANGES', value: 'true'
+                }
+            }
+            steps {
+                sh '''
+                    # Встановлюємо залежності Go (якщо потрібно)
+                    if [ -f "go.mod" ]; then
+                        go mod download
+                        go mod tidy
+                    fi
+                '''
+            }
+        }
+
+        stage('Run Tests') {
+            when {
+                allOf {
+                    branch 'dev'
+                    environment name: 'HAS_GO_CHANGES', value: 'true'
+                }
+            }
+            steps {
+                sh '''
+                    # Запускаємо тести з coverage
+                    go test -v -coverprofile=coverage.out ./...
+
+                    # Конвертуємо coverage в XML формат для SonarCloud
+                    go tool cover -func=coverage.out
+                '''
+            }
+        }
+
+        stage('SonarCloud Analysis') {
+            when {
+                allOf {
+                    branch 'dev'
+                    environment name: 'HAS_GO_CHANGES', value: 'true'
+                }
+            }
+            steps {
+                withSonarQubeEnv('SonarCloud') {
+                    sh '''
+                        # Створюємо sonar-project.properties якщо його немає
+                        if [ ! -f "sonar-project.properties" ]; then
+                            cat > sonar-project.properties << EOF
+sonar.projectKey=${SONAR_PROJECT_KEY}
+sonar.organization=${SONAR_ORGANIZATION}
+sonar.sources=.
+sonar.exclusions=**/*_test.go,**/vendor/**,**/testdata/**
+sonar.tests=.
+sonar.test.inclusions=**/*_test.go
+sonar.go.coverage.reportPaths=coverage.out
+sonar.sourceEncoding=UTF-8
+EOF
+                        fi
+
+                        # Запускаємо SonarCloud аналіз
+                        sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.organization=${SONAR_ORGANIZATION} \
+                            -Dsonar.host.url=https://sonarcloud.io \
+                            -Dsonar.login=${SONAR_TOKEN} \
+                            -Dsonar.scm.revision=${GIT_COMMIT} \
+                            -Dsonar.pullrequest.branch=${BRANCH_NAME} \
+                            -Dsonar.go.coverage.reportPaths=coverage.out
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            when {
+                allOf {
+                    branch 'dev'
+                    environment name: 'HAS_GO_CHANGES', value: 'true'
+                }
+            }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                        }
+                        echo "Quality Gate passed successfully!"
+                    }
                 }
             }
         }
@@ -80,6 +199,9 @@ pipeline {
                 sh """
                     docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
+
+                    # Очищуємо тестові файли
+                    rm -f coverage.out || true
                 """
             }
         }
@@ -89,14 +211,33 @@ pipeline {
         success {
             script {
                 if (env.BRANCH_NAME == 'dev') {
-                    echo "SUCCESS: Dev image built and pushed: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    def message = "SUCCESS: Dev image built and pushed: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    if (env.HAS_GO_CHANGES == 'true') {
+                        message += "\n✅ SonarCloud quality gate passed"
+                    } else {
+                        message += "\n⏭️ No Go files changed, SonarCloud analysis skipped"
+                    }
+                    echo message
                 } else {
                     echo "Skipped: Not dev branch"
                 }
             }
         }
         failure {
-            echo "FAILURE: Build failed"
+            script {
+                def message = "FAILURE: Build failed"
+                if (env.HAS_GO_CHANGES == 'true') {
+                    message += "\n❌ Check SonarCloud quality gate or tests"
+                }
+                echo message
+            }
+        }
+        always {
+            // Публікуємо test results якщо є
+            publishTestResults([
+                testResultsPattern: '**/test-results.xml',
+                allowEmptyResults: true
+            ])
         }
     }
 }
