@@ -69,7 +69,7 @@ pipeline {
                         echo "Installing Go..."
                         cd /tmp
                         curl -L -o go1.21.5.linux-amd64.tar.gz https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-                        sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+                        tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
                         rm go1.21.5.linux-amd64.tar.gz
                         echo "Go installed successfully"
                     else
@@ -175,7 +175,7 @@ EOF
                             error "Pipeline aborted due to quality gate failure: ${qg.status}"
                         }
 
-                        echo "✅ Quality Gate passed successfully!"
+                        echo "Quality Gate passed successfully!"
                     }
                 }
             }
@@ -201,7 +201,7 @@ EOF
                         docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
                     """
 
-                    echo "✅ Docker image built successfully"
+                    echo "Docker image built successfully"
                 }
             }
         }
@@ -220,7 +220,7 @@ EOF
                         echo "Pushing image to ECR..."
                         docker push $DOCKER_REGISTRY:$IMAGE_TAG
 
-                        echo "✅ Image pushed successfully: $DOCKER_REGISTRY:$IMAGE_TAG"
+                        echo "Image pushed successfully: $DOCKER_REGISTRY:$IMAGE_TAG"
                     '''
                 }
             }
@@ -238,7 +238,7 @@ EOF
 
                     rm -f coverage.out || true
 
-                    echo "✅ Cleanup completed"
+                    echo "Cleanup completed"
                 """
             }
         }
@@ -248,30 +248,30 @@ EOF
         success {
             script {
                 if (env.BRANCH_NAME == 'dev') {
-                    def message = "🎉 SUCCESS: Dev pipeline completed successfully"
-                    message += "\n📦 Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    def message = "SUCCESS: Dev pipeline completed successfully"
+                    message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
 
                     if (env.HAS_GO_CHANGES == 'true') {
-                        message += "\n✅ SonarCloud quality gate passed"
-                        message += "\n🔍 View analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
+                        message += "\nSonarCloud quality gate passed"
+                        message += "\nView analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     } else {
-                        message += "\n⏭️ No Go files changed, SonarCloud analysis skipped"
+                        message += "\nNo Go files changed, SonarCloud analysis skipped"
                     }
 
                     echo message
                 } else {
-                    echo "ℹ️ Skipped: Not dev branch"
+                    echo "Skipped: Not dev branch"
                 }
             }
         }
 
         failure {
             script {
-                def message = "❌ FAILURE: Dev pipeline failed"
+                def message = "FAILURE: Dev pipeline failed"
 
                 if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\n🔍 Check SonarCloud quality gate: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                    message += "\n📋 Review test results and code quality issues"
+                    message += "\nCheck SonarCloud quality gate: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
+                    message += "\nReview test results and code quality issues"
                 }
 
                 echo message
@@ -280,8 +280,8 @@ EOF
 
         always {
             script {
-                echo "📊 Pipeline execution completed"
-                echo "🕐 Duration: ${currentBuild.durationString}"
+                echo "Pipeline execution completed"
+                echo "Duration: ${currentBuild.durationString}"
 
                 if (fileExists('**/test-results.xml')) {
                     publishTestResults([
