@@ -145,6 +145,19 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     sh '''
+                        if ! command -v sonar-scanner &> /dev/null; then
+                            echo "Installing SonarScanner..."
+                            (
+                                cd /tmp
+                                curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+                                unzip -q sonar-scanner-cli.zip
+                                mv sonar-scanner-4.8.0.2856-linux /usr/local/sonar-scanner
+                                ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                                rm sonar-scanner-cli.zip
+                            )
+                            echo "SonarScanner installed successfully"
+                        fi
+
                         echo "Preparing SonarCloud analysis..."
 
                         if [ ! -f "sonar-project.properties" ]; then
