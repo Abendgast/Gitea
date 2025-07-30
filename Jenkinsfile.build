@@ -66,6 +66,7 @@ pipeline {
             }
             steps {
                 sh '''
+                    go version
 
                     if [ -f "go.mod" ]; then
                         echo "Installing Go dependencies..."
@@ -89,10 +90,8 @@ pipeline {
                 sh '''
                     echo "Running Go tests with coverage..."
 
-                    # Запускаємо тести з coverage
                     go test -v -coverprofile=coverage.out ./...
 
-                    # Показуємо coverage summary
                     if [ -f "coverage.out" ]; then
                         echo "Coverage summary:"
                         go tool cover -func=coverage.out
@@ -115,7 +114,6 @@ pipeline {
                     sh '''
                         echo "Preparing SonarCloud analysis..."
 
-                        # Створюємо sonar-project.properties якщо його немає
                         if [ ! -f "sonar-project.properties" ]; then
                             echo "Creating sonar-project.properties..."
                             cat > sonar-project.properties << EOF
@@ -132,7 +130,6 @@ EOF
 
                         echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
 
-                        # Запускаємо SonarCloud аналіз для dev гілки (long-lived branch)
                         sonar-scanner \
                             -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                             -Dsonar.organization=${SONAR_ORGANIZATION} \
@@ -226,7 +223,6 @@ EOF
                     docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
 
-                    # Очищуємо тестові файли
                     rm -f coverage.out || true
 
                     echo "✅ Cleanup completed"
