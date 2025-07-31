@@ -7,13 +7,13 @@ pipeline {
         AWS_REGION = 'us-east-1'
         SONAR_PROJECT_KEY = 'Abendgast_Gitea'
         SONAR_ORGANIZATION = 'abendgast'
-        PATH = "/usr/local/go/bin:${env.PATH}"
+        PATH = "/usr/local/go/bin:/usr/local/java17/bin:${env.PATH}"
         JAVA_HOME = '/usr/local/java17'
     }
 
     options {
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 20, unit: 'MINUTES')
         skipDefaultCheckout()
     }
 
@@ -22,39 +22,34 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            when {
-                branch 'main'
-            }
+        stage('Checkout & Detect Changes') {
+            when { branch 'main' }
             steps {
                 checkout scm
                 script {
-                    echo "Building from main branch"
                     env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
-                    echo "Commit: ${env.GIT_COMMIT}"
 
-                    def changedFiles = sh(
+                    def changedGoFiles = sh(
                         script: '''
                             if [ -n "$GIT_PREVIOUS_COMMIT" ]; then
-                                git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT | grep -E "\\.(go)$" || echo ""
+                                git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT | grep -E "\\.go$" || true
                             else
-                                git show --pretty="" --name-only HEAD | grep -E "\\.(go)$" || echo ""
+                                git show --pretty="" --name-only HEAD | grep -E "\\.go$" || true
                             fi
                         ''',
                         returnStdout: true
                     ).trim()
 
-                    env.CHANGED_GO_FILES = changedFiles
-                    echo "Changed Go files:\n${changedFiles}"
+                    env.CHANGED_GO_FILES = changedGoFiles
+                    env.HAS_GO_CHANGES = changedGoFiles ? "true" : "false"
 
-                    def hasGoFiles = changedFiles != ""
-                    env.HAS_GO_CHANGES = hasGoFiles ? "true" : "false"
-                    echo "Has Go file changes: ${env.HAS_GO_CHANGES}"
+                    echo "Changed Go files: ${changedGoFiles ?: 'none'}"
+                    echo "Will run analysis: ${env.HAS_GO_CHANGES}"
                 }
             }
         }
 
-        stage('Setup Java 17') {
+        stage('Setup Environment') {
             when {
                 allOf {
                     branch 'main'
@@ -63,80 +58,49 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "Setting up Java 17 for SonarCloud..."
-
-                    if [ -d "/usr/local/java17" ] && /usr/local/java17/bin/java -version 2>&1 | grep -q "17\\."; then
-                        echo "Java 17 already installed"
-                    else
+                    # Setup Java 17
+                    if [ ! -d "/usr/local/java17" ]; then
                         echo "Installing Java 17..."
                         cd /tmp
-
-                        curl -L -o openjdk-17_linux-x64_bin.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
-
+                        curl -sL -o openjdk-17.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
                         mkdir -p /usr/local/java17
-                        tar --strip-components=1 -C /usr/local/java17 -xzf openjdk-17_linux-x64_bin.tar.gz
-
-                        rm -f openjdk-17_linux-x64_bin.tar.gz
-
-                        echo "Java 17 installed successfully"
+                        tar --strip-components=1 -C /usr/local/java17 -xzf openjdk-17.tar.gz
+                        rm -f openjdk-17.tar.gz
                     fi
 
-                    /usr/local/java17/bin/java -version
-
-                    export JAVA_HOME=/usr/local/java17
-                    export PATH=$JAVA_HOME/bin:$PATH
-                '''
-            }
-        }
-
-        stage('Setup Go Environment') {
-            when {
-                allOf {
-                    branch 'main'
-                    environment name: 'HAS_GO_CHANGES', value: 'true'
-                }
-            }
-            steps {
-                sh '''
-                    echo "Setting up Go environment..."
-
-                    if command -v go &> /dev/null; then
-                        CURRENT_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-                        if [ "$CURRENT_VERSION" != "1.21.5" ]; then
-                            echo "Removing old Go version: $CURRENT_VERSION"
-                            rm -rf /usr/local/go || true
-                        fi
-                    fi
-
+                    # Setup Go 1.21.5
                     if [ ! -d "/usr/local/go" ] || ! /usr/local/go/bin/go version 2>&1 | grep -q "go1.21.5"; then
                         echo "Installing Go 1.21.5..."
                         cd /tmp
-                        curl -L -o go1.21.5.linux-amd64.tar.gz https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+                        curl -sL -o go1.21.5.linux-amd64.tar.gz https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+                        rm -rf /usr/local/go
                         tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
-                        rm go1.21.5.linux-amd64.tar.gz
-                        echo "Go installed successfully"
-                    else
-                        echo "Go 1.21.5 already installed"
+                        rm -f go1.21.5.linux-amd64.tar.gz
                     fi
 
-                    /usr/local/go/bin/go version
+                    # Setup SonarScanner
+                    if [ ! -f "/usr/local/bin/sonar-scanner" ]; then
+                        echo "Installing SonarScanner..."
+                        cd /tmp
+                        curl -sL -o sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                        unzip -q sonar-scanner.zip
+                        rm -rf /usr/local/sonar-scanner
+                        mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
+                        ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                        chmod +x /usr/local/bin/sonar-scanner
+                        rm -f sonar-scanner.zip
+                    fi
 
-                    # Перевіряємо чи є go.mod в поточній директорії
+                    # Initialize Go module if needed
                     if [ ! -f "go.mod" ]; then
-                        echo "No go.mod found in current directory"
-                        # Створюємо базовий go.mod якщо його немає
                         /usr/local/go/bin/go mod init code.gitea.io/gitea
-                        echo "Created go.mod file"
                     fi
-
-                    echo "Installing Go dependencies..."
-                    /usr/local/go/bin/go mod download || echo "No dependencies to download"
-                    /usr/local/go/bin/go mod tidy || echo "Module tidy completed"
+                    /usr/local/go/bin/go mod tidy || true
                 '''
             }
         }
 
-        stage('Run Tests') {
+        stage('Test Changed Files') {
             when {
                 allOf {
                     branch 'main'
@@ -144,74 +108,34 @@ pipeline {
                 }
             }
             steps {
-                script {
-                    def changedGoFiles = env.CHANGED_GO_FILES
+                sh '''
+                    export USER=gitea
+                    export HOME=/tmp/gitea-home
+                    mkdir -p $HOME
 
-                    sh """
-                        echo "Running tests only for changed Go files..."
+                    echo "Testing changed Go files..."
 
-                        export GITEA_CONF=""
-                        export USER=gitea
-                        export HOME=/tmp/gitea-home
-                        mkdir -p \$HOME
-
-                        echo "Changed Go files to test:"
-                        echo "${changedGoFiles}"
-
-                        if [ -z "${changedGoFiles}" ]; then
-                            echo "No Go files changed, skipping tests"
-                            echo "mode: atomic" > coverage.out
-                            exit 0
-                        fi
-
-                        # Знаходимо пакети для змінених файлів
-                        PACKAGES_TO_TEST=""
-                        for file in ${changedGoFiles}; do
-                            if [ -f "\$file" ]; then
-                                # Отримуємо директорію файлу
-                                DIR=\$(dirname "\$file")
-                                # Додаємо до списку пакетів якщо ще немає
-                                if ! echo "\$PACKAGES_TO_TEST" | grep -q "\$DIR"; then
-                                    PACKAGES_TO_TEST="\$PACKAGES_TO_TEST ./\$DIR"
-                                fi
+                    # Get unique directories of changed files
+                    PACKAGES=""
+                    for file in ${CHANGED_GO_FILES}; do
+                        if [ -f "$file" ]; then
+                            dir=$(dirname "$file")
+                            # Add unique directories
+                            if ! echo "$PACKAGES" | grep -q "$dir"; then
+                                PACKAGES="$PACKAGES ./$dir"
                             fi
-                        done
-
-                        # Очищуємо дублікати і зайві пробіли
-                        PACKAGES_TO_TEST=\$(echo \$PACKAGES_TO_TEST | tr ' ' '\\n' | sort | uniq | tr '\\n' ' ')
-
-                        echo "Packages to test: \$PACKAGES_TO_TEST"
-
-                        if [ -z "\$PACKAGES_TO_TEST" ]; then
-                            echo "No valid packages found for testing"
-                            echo "mode: atomic" > coverage.out
-                            exit 0
                         fi
+                    done
 
-                        echo "Running tests with coverage for changed packages only..."
-                        # Запускаємо тести тільки для змінених пакетів
-                        set +e
-                        /usr/local/go/bin/go test -v \$PACKAGES_TO_TEST -coverprofile=coverage.out -covermode=atomic
-                        TEST_EXIT_CODE=\$?
-                        set -e
+                    PACKAGES=$(echo $PACKAGES | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
+                    echo "Testing packages: $PACKAGES"
 
-                        if [ \$TEST_EXIT_CODE -eq 0 ]; then
-                            echo "Tests passed successfully for changed files"
-                        else
-                            echo "Some tests failed in changed packages, but continuing with analysis"
-                        fi
-
-                        if [ -f "coverage.out" ]; then
-                            echo "Coverage report generated for changed packages"
-                            /usr/local/go/bin/go tool cover -func coverage.out | tail -n 1
-                        else
-                            echo "No coverage report generated - creating empty coverage file"
-                            echo "mode: atomic" > coverage.out
-                        fi
-
-                        echo "Test execution completed for changed files only"
-                    """
-                }
+                    if [ -n "$PACKAGES" ]; then
+                        /usr/local/go/bin/go test -v $PACKAGES -coverprofile=coverage.out -covermode=atomic || true
+                    else
+                        echo "mode: atomic" > coverage.out
+                    fi
+                '''
             }
         }
 
@@ -225,86 +149,42 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        script {
-                            def changedGoFiles = env.CHANGED_GO_FILES
-
-                            sh """
-                                echo "Setting up SonarScanner with Java 17..."
-
-                                export JAVA_HOME=/usr/local/java17
-                                export PATH=\$JAVA_HOME/bin:\$PATH
-
-                                echo "Using Java version:"
-                                java -version
-
-                                # Видаляємо попередні установки
-                                rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
-                                rm -rf /tmp/sonar-scanner* || true
-
-                                echo "Installing latest SonarScanner compatible with Java 17..."
-                                cd /tmp
-                                curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                                unzip -o sonar-scanner-cli.zip
-                                mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
-                                ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-                                chmod +x /usr/local/bin/sonar-scanner
-                                rm -f sonar-scanner-cli.zip
-                                echo "SonarScanner installed successfully"
-
-                                echo "Preparing SonarCloud analysis for changed files only..."
-
-                                # Використовуємо тільки змінені файли для аналізу
-                                CHANGED_FILES="${changedGoFiles}"
-                                echo "Changed Go files for analysis: \$CHANGED_FILES"
-
-                                if [ -z "\$CHANGED_FILES" ]; then
-                                    echo "No changed Go files found, using current directory for analysis"
-                                    SONAR_SOURCES="."
-                                else
-                                    # Створюємо список змінених файлів для SonarCloud
-                                    SONAR_SOURCES=\$(echo "\$CHANGED_FILES" | tr '\\n' ',' | tr ' ' ',' | sed 's/,,*/,/g' | sed 's/,\$//')
-                                    echo "SonarCloud will analyze only these files: \$SONAR_SOURCES"
+                        sh '''
+                            # Get unique directories for sonar.sources
+                            SONAR_DIRS=""
+                            for file in ${CHANGED_GO_FILES}; do
+                                dir=$(dirname "$file")
+                                if [ "$dir" = "." ]; then
+                                    dir="."
                                 fi
-
-                                # Створюємо конфігурацію для SonarCloud
-                                cat > sonar-project.properties << EOF
-sonar.projectKey=${SONAR_PROJECT_KEY}
-sonar.organization=${SONAR_ORGANIZATION}
-sonar.sourceEncoding=UTF-8
-sonar.sources=\$SONAR_SOURCES
-sonar.language=go
-sonar.go.coverage.reportPaths=coverage.out
-sonar.exclusions=**/*_test.go,**/vendor/**,**/*.pb.go,**/.git/**
-sonar.projectVersion=main-${BUILD_NUMBER}
-sonar.scm.provider=git
-EOF
-
-                                echo "Running SonarCloud analysis for changed files only..."
-                                echo "Configuration file created for changed files analysis"
-
-                                # Запускаємо SonarScanner
-                                set +e
-                                JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:\$PATH /usr/local/bin/sonar-scanner \\
-                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
-                                    -Dsonar.organization=${SONAR_ORGANIZATION} \\
-                                    -Dsonar.host.url=https://sonarcloud.io \\
-                                    -Dsonar.token=\${SONAR_TOKEN} \\
-                                    -Dsonar.scm.revision=${GIT_COMMIT} \\
-                                    -Dsonar.branch.name=${BRANCH_NAME} \\
-                                    -Dsonar.verbose=true \\
-                                    -Dsonar.projectVersion=main-${BUILD_NUMBER}
-
-                                SONAR_EXIT_CODE=\$?
-                                set -e
-
-                                if [ \$SONAR_EXIT_CODE -eq 0 ]; then
-                                    echo "SonarCloud analysis completed successfully"
-                                else
-                                    echo "SonarCloud analysis failed with exit code: \$SONAR_EXIT_CODE"
-                                    echo "Continuing pipeline - will handle in Quality Gate stage"
+                                if ! echo "$SONAR_DIRS" | grep -q "$dir"; then
+                                    SONAR_DIRS="$SONAR_DIRS,$dir"
                                 fi
-                            """
-                        }
+                            done
+
+                            # Clean up the directory list
+                            SONAR_DIRS=$(echo "$SONAR_DIRS" | sed 's/^,//' | sed 's/,,*/,/g')
+
+                            # If only root files, use current directory
+                            if [ "$SONAR_DIRS" = "." ]; then
+                                SONAR_DIRS="."
+                            fi
+
+                            echo "SonarCloud analyzing directories: $SONAR_DIRS"
+
+                            /usr/local/bin/sonar-scanner \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.organization=${SONAR_ORGANIZATION} \
+                                -Dsonar.host.url=https://sonarcloud.io \
+                                -Dsonar.token=${SONAR_TOKEN} \
+                                -Dsonar.sources="$SONAR_DIRS" \
+                                -Dsonar.language=go \
+                                -Dsonar.go.coverage.reportPaths=coverage.out \
+                                -Dsonar.exclusions="**/*_test.go,**/vendor/**,**/*.pb.go" \
+                                -Dsonar.scm.revision=${GIT_COMMIT} \
+                                -Dsonar.branch.name=${BRANCH_NAME} \
+                                -Dsonar.projectVersion=main-${BUILD_NUMBER} || echo "SonarCloud analysis completed with warnings"
+                        '''
                     }
                 }
             }
@@ -318,291 +198,105 @@ EOF
                 }
             }
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     script {
                         try {
-                            echo "Waiting for SonarCloud Quality Gate result for main branch..."
-
-                            // Збільшуємо час очікування перед перевіркою
-                            sleep(60)
-
-                            // Використовуємо більш надійний підхід до перевірки Quality Gate
-                            def qg
-                            try {
-                                qg = waitForQualityGate(abortPipeline: false)
-                            } catch (Exception e) {
-                                echo "Failed to get Quality Gate status: ${e.getMessage()}"
-
-                                // Якщо не можемо отримати статус, перевіряємо вручну через API
-                                def sonarStatus = sh(
-                                    script: """
-                                        sleep 30
-                                        # Можемо додати додаткові перевірки тут якщо потрібно
-                                        echo "MANUAL_CHECK"
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-
-                                echo "Manual quality check completed"
-                                // Продовжуємо з попередженням
-                                currentBuild.result = 'SUCCESS'
-                                return
-                            }
+                            sleep(30) // Give SonarCloud time to process
+                            def qg = waitForQualityGate(abortPipeline: false)
 
                             if (qg.status != 'OK') {
                                 echo "Quality Gate failed: ${qg.status}"
-                                echo "Check SonarCloud dashboard for details: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-
-                                if (qg.conditions) {
-                                    echo "Failed conditions:"
-                                    qg.conditions.each { condition ->
-                                        if (condition.status != 'OK') {
-                                            echo "- ${condition.metricKey}: ${condition.actualValue} (threshold: ${condition.errorThreshold})"
-                                        }
-                                    }
-                                }
-
-                                // Для main гілки ми можемо бути менш суворими або додати ручну перевірку
-                                echo "Quality Gate failed, but continuing deployment with warning"
+                                echo "Dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                                 currentBuild.result = 'UNSTABLE'
-
                             } else {
-                                echo "Quality Gate passed successfully for main branch!"
-                                echo "View detailed report: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
+                                echo "Quality Gate passed!"
                             }
                         } catch (Exception e) {
-                            echo "Quality Gate check encountered an error: ${e.getMessage()}"
-
-                            if (e.getMessage().contains('timeout') || e.getMessage().contains('Timeout')) {
-                                echo "Quality Gate check timed out - continuing with warning"
-                                echo "Check SonarCloud dashboard manually: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                                currentBuild.result = 'UNSTABLE'
-                            } else {
-                                echo "Quality Gate error - continuing with warning for main branch"
-                                echo "Manual verification required: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                                currentBuild.result = 'UNSTABLE'
-                            }
+                            echo "Quality Gate check failed: ${e.getMessage()}"
+                            echo "Continuing with warning - check dashboard manually"
+                            currentBuild.result = 'UNSTABLE'
                         }
                     }
                 }
             }
         }
 
-        stage('Build Production Docker Image') {
+        stage('Build & Push to ECR') {
             when {
                 allOf {
                     branch 'main'
-                    not {
-                        expression { currentBuild.result == 'FAILURE' }
-                    }
+                    not { expression { currentBuild.result == 'FAILURE' } }
                 }
             }
             steps {
                 script {
                     def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
-                    def buildNumber = env.BUILD_NUMBER
 
-                    env.IMAGE_TAG = "v${buildNumber}-${timestamp}-${shortCommit}"
+                    env.IMAGE_TAG = "v${BUILD_NUMBER}-${timestamp}-${shortCommit}"
                     env.LATEST_TAG = "latest"
 
-                    echo "Building production Docker image for main branch..."
-                    echo "Image name: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
-                    echo "Registry: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                    echo "Also tagging as: ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}"
-
-                    sh """
-                        docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
-                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
-                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}
-                    """
-
-                    echo "Production Docker image built successfully"
+                    echo "Building image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
                 }
-            }
-        }
 
-        stage('Push to ECR Production') {
-            when {
-                allOf {
-                    branch 'main'
-                    not {
-                        expression { currentBuild.result == 'FAILURE' }
-                    }
-                }
-            }
-            steps {
+                sh """
+                    # Build Docker image
+                    docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
+                    docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
+                    docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}
+                """
+
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
-                        echo "Logging into ECR for production deployment..."
+                        # Login and push to ECR
                         aws ecr get-login-password --region $AWS_REGION | \
                             docker login --username AWS --password-stdin $DOCKER_REGISTRY
 
-                        echo "Pushing production images to ECR..."
                         docker push $DOCKER_REGISTRY:$IMAGE_TAG
                         docker push $DOCKER_REGISTRY:$LATEST_TAG
 
-                        echo "Production images pushed successfully:"
+                        echo "Images pushed:"
                         echo "  - $DOCKER_REGISTRY:$IMAGE_TAG"
                         echo "  - $DOCKER_REGISTRY:$LATEST_TAG"
                     '''
                 }
             }
         }
-
-        stage('Generate Production Report') {
-            when {
-                allOf {
-                    branch 'main'
-                    environment name: 'HAS_GO_CHANGES', value: 'true'
-                }
-            }
-            steps {
-                script {
-                    def reportStatus = currentBuild.result ?: 'SUCCESS'
-                    def timestamp = new Date().format('yyyy-MM-dd HH:mm:ss')
-
-                    writeFile file: 'production-release-report.txt', text: """
-Production Release Report - Main Branch
-=======================================
-Project: ${env.SONAR_PROJECT_KEY}
-Organization: ${env.SONAR_ORGANIZATION}
-Branch: ${env.BRANCH_NAME}
-Commit: ${env.GIT_COMMIT}
-Build Number: ${env.BUILD_NUMBER}
-Timestamp: ${timestamp}
-
-Quality Assurance:
-- Go Files Analyzed: CHANGED FILES ONLY
-- Changed Files: ${env.CHANGED_GO_FILES}
-- Quality Gate Status: ${reportStatus}
-- Analysis URL: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}
-
-Production Deployment:
-- Pipeline Result: ${reportStatus}
-- Production Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT CREATED"}
-- Latest Tag: ${env.LATEST_TAG ? "${env.DOCKER_REGISTRY}:${env.LATEST_TAG}" : "NOT CREATED"}
-
-Release Notes:
-- This is a production-ready release from main branch
-- Test suite executed ONLY for changed Go files
-- SonarCloud quality analysis completed for changed files only
-- Production Docker images available in ECR
-"""
-
-                    archiveArtifacts artifacts: 'production-release-report.txt', fingerprint: true
-                    echo "Production release report generated and archived"
-                }
-            }
-        }
-
-        stage('Cleanup') {
-            when {
-                branch 'main'
-            }
-            steps {
-                sh """
-                    echo "Cleaning up local Docker images..."
-                    docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
-                    docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
-                    docker rmi ${env.DOCKER_REGISTRY}:${env.LATEST_TAG} || true
-
-                    rm -f coverage.out || true
-                    rm -f sonar-project.properties || true
-
-                    echo "Cleanup completed"
-                """
-            }
-        }
     }
 
     post {
+        always {
+            sh '''
+                # Cleanup
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
+                docker rmi ${DOCKER_REGISTRY}:${IMAGE_TAG} || true
+                docker rmi ${DOCKER_REGISTRY}:${LATEST_TAG} || true
+                rm -f coverage.out || true
+            '''
+        }
+
         success {
             script {
                 if (env.BRANCH_NAME == 'main') {
-                    def message = "SUCCESS: Production pipeline completed successfully"
-
+                    def message = "✅ Production deployment successful"
                     if (env.HAS_GO_CHANGES == 'true') {
-                        message += "\nSonarCloud analysis completed for changed files only"
-                        message += "\nTest suite executed for changed Go files"
-                        message += "\nChanged files: ${env.CHANGED_GO_FILES}"
-                        message += "\nView analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                    } else {
-                        message += "\nNo Go files changed, SonarCloud analysis skipped"
+                        message += "\n📊 Analyzed files: ${env.CHANGED_GO_FILES}"
+                        message += "\n🔍 SonarCloud: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     }
-
                     if (env.IMAGE_TAG) {
-                        message += "\nProduction images pushed to ECR:"
-                        message += "\n  - ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                        message += "\n  - ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}"
+                        message += "\n🐳 Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
                     }
-
                     echo message
-                } else {
-                    echo "Skipped: Not main branch"
                 }
             }
         }
 
         failure {
-            script {
-                def message = "FAILURE: Production pipeline failed"
-
-                if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\nCheck SonarCloud dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                    message += "\nProduction Docker images were NOT pushed to ECR"
-                } else {
-                    message += "\nProduction pipeline failed for other reasons"
-                }
-
-                message += "\nImmediate action required for main branch failure"
-
-                echo message
-            }
+            echo "❌ Pipeline failed - check logs for details"
         }
 
         unstable {
-            script {
-                def message = "UNSTABLE: Production pipeline completed with warnings"
-                message += "\nQuality Gate may have failed, but deployment continued"
-
-                if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\nCheck SonarCloud dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                }
-
-                echo message
-            }
-        }
-
-        always {
-            script {
-                echo "Production pipeline execution completed"
-                echo "Duration: ${currentBuild.durationString}"
-
-                if (fileExists('**/test-results.xml')) {
-                    publishTestResults([
-                        testResultsPattern: '**/test-results.xml',
-                        allowEmptyResults: true
-                    ])
-                }
-
-                sh '''
-                    rm -f sonar-project.properties || true
-                    rm -f coverage.out || true
-                '''
-
-                if (env.BRANCH_NAME == 'main') {
-                    echo "=== PRODUCTION DEPLOYMENT SUMMARY ==="
-                    echo "Branch: ${env.BRANCH_NAME}"
-                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}"
-                    echo "Build: ${env.BUILD_NUMBER}"
-                    echo "Commit: ${env.GIT_COMMIT}"
-                    if (env.IMAGE_TAG) {
-                        echo "Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                    }
-                    echo "===================================="
-                }
-            }
+            echo "⚠️ Pipeline completed with warnings - quality gate issues detected"
         }
     }
 }
