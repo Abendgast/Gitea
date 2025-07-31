@@ -225,47 +225,49 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarCloud') {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        sh '''
-                            echo "Setting up SonarScanner with Java 17..."
+                        script {
+                            def changedGoFiles = env.CHANGED_GO_FILES
 
-                            export JAVA_HOME=/usr/local/java17
-                            export PATH=$JAVA_HOME/bin:$PATH
+                            sh """
+                                echo "Setting up SonarScanner with Java 17..."
 
-                            echo "Using Java version:"
-                            java -version
+                                export JAVA_HOME=/usr/local/java17
+                                export PATH=\$JAVA_HOME/bin:\$PATH
 
-                            # Видаляємо попередні установки
-                            rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
-                            rm -rf /tmp/sonar-scanner* || true
+                                echo "Using Java version:"
+                                java -version
 
-                            echo "Installing latest SonarScanner compatible with Java 17..."
-                            cd /tmp
-                            curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                            unzip -o sonar-scanner-cli.zip
-                            mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
-                            ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-                            chmod +x /usr/local/bin/sonar-scanner
-                            rm -f sonar-scanner-cli.zip
-                            echo "SonarScanner installed successfully"
+                                # Видаляємо попередні установки
+                                rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
+                                rm -rf /tmp/sonar-scanner* || true
 
-                            echo "Preparing SonarCloud analysis for changed files only..."
+                                echo "Installing latest SonarScanner compatible with Java 17..."
+                                cd /tmp
+                                curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                                unzip -o sonar-scanner-cli.zip
+                                mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
+                                ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                                chmod +x /usr/local/bin/sonar-scanner
+                                rm -f sonar-scanner-cli.zip
+                                echo "SonarScanner installed successfully"
 
-                            # Використовуємо тільки змінені файли для аналізу
-                            CHANGED_FILES="${env.CHANGED_GO_FILES}"
-                            echo "Changed Go files for analysis: \$CHANGED_FILES"
+                                echo "Preparing SonarCloud analysis for changed files only..."
 
-                            if [ -z "\$CHANGED_FILES" ]; then
-                                echo "No changed Go files found, skipping SonarCloud analysis"
-                                exit 0
-                            fi
+                                # Використовуємо тільки змінені файли для аналізу
+                                CHANGED_FILES="${changedGoFiles}"
+                                echo "Changed Go files for analysis: \$CHANGED_FILES"
 
-                            # Створюємо список змінених файлів для SonarCloud
-                            SONAR_SOURCES=\$(echo "\$CHANGED_FILES" | tr ' ' ',' | sed 's/,\$//')
+                                if [ -z "\$CHANGED_FILES" ]; then
+                                    echo "No changed Go files found, using current directory for analysis"
+                                    SONAR_SOURCES="."
+                                else
+                                    # Створюємо список змінених файлів для SonarCloud
+                                    SONAR_SOURCES=\$(echo "\$CHANGED_FILES" | tr '\\n' ',' | tr ' ' ',' | sed 's/,,*/,/g' | sed 's/,\$//')
+                                    echo "SonarCloud will analyze only these files: \$SONAR_SOURCES"
+                                fi
 
-                            echo "SonarCloud will analyze only these files: \$SONAR_SOURCES"
-
-                            # Створюємо конфігурацію для SonarCloud тільки зі зміненими файлами
-                            cat > sonar-project.properties << EOF
+                                # Створюємо конфігурацію для SonarCloud
+                                cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
 sonar.sourceEncoding=UTF-8
@@ -277,31 +279,32 @@ sonar.projectVersion=main-${BUILD_NUMBER}
 sonar.scm.provider=git
 EOF
 
-                            echo "Running SonarCloud analysis for changed files only..."
-                            echo "Configuration file created for changed files analysis"
+                                echo "Running SonarCloud analysis for changed files only..."
+                                echo "Configuration file created for changed files analysis"
 
-                            # Запускаємо SonarScanner
-                            set +e
-                            JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                -Dsonar.organization=${SONAR_ORGANIZATION} \
-                                -Dsonar.host.url=https://sonarcloud.io \
-                                -Dsonar.token=${SONAR_TOKEN} \
-                                -Dsonar.scm.revision=${GIT_COMMIT} \
-                                -Dsonar.branch.name=${BRANCH_NAME} \
-                                -Dsonar.verbose=true \
-                                -Dsonar.projectVersion=main-${BUILD_NUMBER}
+                                # Запускаємо SonarScanner
+                                set +e
+                                JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:\$PATH /usr/local/bin/sonar-scanner \\
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
+                                    -Dsonar.organization=${SONAR_ORGANIZATION} \\
+                                    -Dsonar.host.url=https://sonarcloud.io \\
+                                    -Dsonar.token=\${SONAR_TOKEN} \\
+                                    -Dsonar.scm.revision=${GIT_COMMIT} \\
+                                    -Dsonar.branch.name=${BRANCH_NAME} \\
+                                    -Dsonar.verbose=true \\
+                                    -Dsonar.projectVersion=main-${BUILD_NUMBER}
 
-                            SONAR_EXIT_CODE=$?
-                            set -e
+                                SONAR_EXIT_CODE=\$?
+                                set -e
 
-                            if [ $SONAR_EXIT_CODE -eq 0 ]; then
-                                echo "SonarCloud analysis completed successfully"
-                            else
-                                echo "SonarCloud analysis failed with exit code: $SONAR_EXIT_CODE"
-                                echo "Continuing pipeline - will handle in Quality Gate stage"
-                            fi
-                        '''
+                                if [ \$SONAR_EXIT_CODE -eq 0 ]; then
+                                    echo "SonarCloud analysis completed successfully"
+                                else
+                                    echo "SonarCloud analysis failed with exit code: \$SONAR_EXIT_CODE"
+                                    echo "Continuing pipeline - will handle in Quality Gate stage"
+                                fi
+                            """
+                        }
                     }
                 }
             }
