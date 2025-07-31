@@ -207,45 +207,36 @@ pipeline {
                             )
                             echo "SonarScanner installed successfully"
 
-                            echo "Preparing SonarCloud analysis..."
+                            echo "Preparing SonarCloud analysis for changed files only..."
 
                             changed_sources=""
-                            changed_tests=""
-
                             for file in $CHANGED_FILES; do
-                                if echo "$file" | grep -E "\\.(go|js|ts|java|py|php|cs|cpp|c|h)$" > /dev/null; then
-                                    if echo "$file" | grep "_test\\." > /dev/null; then
-                                        if [ -z "$changed_tests" ]; then
-                                            changed_tests="$file"
-                                        else
-                                            changed_tests="$changed_tests,$file"
-                                        fi
+                                if echo "$file" | grep -E "\\.(go)$" > /dev/null && ! echo "$file" | grep "_test\\." > /dev/null; then
+                                    if [ -z "$changed_sources" ]; then
+                                        changed_sources="$file"
                                     else
-                                        if [ -z "$changed_sources" ]; then
-                                            changed_sources="$file"
-                                        else
-                                            changed_sources="$changed_sources,$file"
-                                        fi
+                                        changed_sources="$changed_sources,$file"
                                     fi
                                 fi
                             done
 
-                            echo "Changed source files: $changed_sources"
-                            echo "Changed test files: $changed_tests"
+                            echo "Changed source files for analysis: $changed_sources"
+
+                            if [ -z "$changed_sources" ]; then
+                                echo "No Go source files changed, skipping SonarCloud analysis"
+                                exit 0
+                            fi
 
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
 sonar.sourceEncoding=UTF-8
-sonar.sources=.
-sonar.exclusions=**/vendor/**,**/*_test.go,**/node_modules/**
-sonar.tests=.
-sonar.test.inclusions=**/*_test.go
+sonar.sources=$changed_sources
 sonar.go.coverage.reportPaths=coverage.out
 EOF
 
-                            echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
-                            echo "Using Java: $JAVA_HOME"
+                            echo "Running SonarCloud analysis for changed files only..."
+                            echo "Analyzing files: $changed_sources"
 
                             JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
@@ -253,7 +244,8 @@ EOF
                                 -Dsonar.host.url=https://sonarcloud.io \
                                 -Dsonar.token=${SONAR_TOKEN} \
                                 -Dsonar.scm.revision=${GIT_COMMIT} \
-                                -Dsonar.branch.name=${BRANCH_NAME}
+                                -Dsonar.branch.name=${BRANCH_NAME} \
+                                -Dsonar.verbose=true
                         '''
                     }
                 }
@@ -277,13 +269,16 @@ EOF
                             if (qg.status != 'OK') {
                                 echo "Quality Gate failed: ${qg.status}"
                                 echo "Check SonarCloud dashboard for details: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                                error "Quality Gate failed with status: ${qg.status}"
+                                currentBuild.result = 'FAILURE'
+                                error "Quality Gate failed with status: ${qg.status}. Pipeline will fail and Docker image will NOT be pushed to ECR."
                             } else {
                                 echo "Quality Gate passed successfully!"
+                                echo "View detailed report: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                             }
                         } catch (Exception e) {
                             echo "Quality Gate check failed: ${e.getMessage()}"
-                            error "Pipeline failed due to Quality Gate issues"
+                            currentBuild.result = 'FAILURE'
+                            error "Pipeline failed due to Quality Gate issues. Docker image will NOT be pushed to ECR."
                         }
                     }
                 }
@@ -294,9 +289,8 @@ EOF
             when {
                 allOf {
                     branch 'dev'
-                    anyOf {
-                        environment name: 'HAS_GO_CHANGES', value: 'false'
-                        expression { currentBuild.result != 'FAILURE' }
+                    not {
+                        expression { currentBuild.result == 'FAILURE' }
                     }
                 }
             }
@@ -325,9 +319,8 @@ EOF
             when {
                 allOf {
                     branch 'dev'
-                    anyOf {
-                        environment name: 'HAS_GO_CHANGES', value: 'false'
-                        expression { currentBuild.result != 'FAILURE' }
+                    not {
+                        expression { currentBuild.result == 'FAILURE' }
                     }
                 }
             }
@@ -347,6 +340,43 @@ EOF
             }
         }
 
+        stage('Generate Report') {
+            when {
+                allOf {
+                    branch 'dev'
+                    environment name: 'HAS_GO_CHANGES', value: 'true'
+                }
+            }
+            steps {
+                script {
+                    def reportStatus = currentBuild.result ?: 'SUCCESS'
+                    def timestamp = new Date().format('yyyy-MM-dd HH:mm:ss')
+
+                    writeFile file: 'sonar-analysis-report.txt', text: """
+SonarCloud Analysis Report
+==========================
+Project: ${env.SONAR_PROJECT_KEY}
+Organization: ${env.SONAR_ORGANIZATION}
+Branch: ${env.BRANCH_NAME}
+Commit: ${env.GIT_COMMIT}
+Timestamp: ${timestamp}
+
+Changed Files Analyzed:
+${env.CHANGED_FILES}
+
+Quality Gate Status: ${reportStatus}
+Analysis URL: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}
+
+Pipeline Result: ${reportStatus}
+Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT CREATED - Quality Gate Failed"}
+"""
+
+                    archiveArtifacts artifacts: 'sonar-analysis-report.txt', fingerprint: true
+                    echo "Analysis report generated and archived as artifact"
+                }
+            }
+        }
+
         stage('Cleanup') {
             when {
                 branch 'dev'
@@ -358,7 +388,6 @@ EOF
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
 
                     rm -f coverage.out || true
-                    rm -f sonar-project.properties || true
 
                     echo "Cleanup completed"
                 """
@@ -371,13 +400,17 @@ EOF
             script {
                 if (env.BRANCH_NAME == 'dev') {
                     def message = "SUCCESS: Dev pipeline completed successfully"
-                    message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
 
                     if (env.HAS_GO_CHANGES == 'true') {
                         message += "\nSonarCloud analysis completed and Quality Gate passed"
+                        message += "\nChanged files analyzed: ${env.CHANGED_FILES}"
                         message += "\nView analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     } else {
                         message += "\nNo Go files changed, SonarCloud analysis skipped"
+                    }
+
+                    if (env.IMAGE_TAG) {
+                        message += "\nImage pushed to ECR: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
                     }
 
                     echo message
@@ -392,22 +425,14 @@ EOF
                 def message = "FAILURE: Dev pipeline failed"
 
                 if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\nCheck SonarCloud quality gate: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                    message += "\nReview test results and code quality issues"
+                    message += "\nSonarCloud Quality Gate FAILED"
+                    message += "\nChanged files that failed analysis: ${env.CHANGED_FILES}"
+                    message += "\nCheck SonarCloud dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     message += "\nDocker image was NOT pushed to ECR due to quality gate failure"
+                } else {
+                    message += "\nPipeline failed for other reasons"
                 }
 
-                echo message
-            }
-        }
-
-        unstable {
-            script {
-                def message = "UNSTABLE: Dev pipeline completed with warnings"
-                if (env.IMAGE_TAG) {
-                    message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                }
-                message += "\nCheck SonarCloud for quality gate issues: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                 echo message
             }
         }
