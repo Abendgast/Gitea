@@ -55,9 +55,7 @@ pipeline {
             steps {
                 sh '''
                     echo "Setting up Go and Java..."
-                    # Java setup (simplified)
                     mkdir -p /usr/local/java17 || true
-                    # Go setup (simplified)
                     mkdir -p /usr/local/go || true
                     echo "Java and Go folders prepared."
                 '''
@@ -181,14 +179,57 @@ pipeline {
         always {
             script {
                 def status = currentBuild.currentResult
-                def color = (status == 'SUCCESS') ? 3066993 : 15158332  // зелений або червоний
+                def color = (status == 'SUCCESS') ? 3066993 : 15158332
                 def shortCommit = env.GIT_COMMIT?.take(7) ?: 'unknown'
-                def webhookMessage = """
+                def buildTime = new Date().format("yyyy-MM-dd HH:mm:ss", TimeZone.getTimeZone('UTC'))
+                def imageName = "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG ?: 'not built'}"
+
+                def message = """
                 {
                   "embeds": [{
-                    "title": "Jenkins Pipeline Notification",
-                    "description": "**Status:** ${status}\\n**Branch:** ${env.BRANCH_NAME}\\n**Commit:** ${shortCommit}\\n**Build URL:** [View Build](${env.BUILD_URL})",
-                    "color": ${color}
+                    "title": "Jenkins Pipeline Report",
+                    "color": ${color},
+                    "fields": [
+                      {
+                        "name": "Status",
+                        "value": "${status}",
+                        "inline": true
+                      },
+                      {
+                        "name": "Branch",
+                        "value": "${env.BRANCH_NAME ?: 'unknown'}",
+                        "inline": true
+                      },
+                      {
+                        "name": "Commit",
+                        "value": "${shortCommit}",
+                        "inline": true
+                      },
+                      {
+                        "name": "Docker Image",
+                        "value": "${imageName}",
+                        "inline": false
+                      },
+                      {
+                        "name": "Registry",
+                        "value": "${env.DOCKER_REGISTRY}",
+                        "inline": false
+                      },
+                      {
+                        "name": "Build Time (UTC)",
+                        "value": "${buildTime}",
+                        "inline": false
+                      },
+                      {
+                        "name": "Build URL",
+                        "value": "[View Build](${env.BUILD_URL})",
+                        "inline": false
+                      }
+                    ],
+                    "footer": {
+                      "text": "Jenkins CI/CD · Build #${env.BUILD_NUMBER}"
+                    },
+                    "timestamp": "${new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))}"
                   }]
                 }
                 """
@@ -196,7 +237,7 @@ pipeline {
                 withCredentials([string(credentialsId: 'discord-webhook-url', variable: 'DISCORD_WEBHOOK')]) {
                     sh """
                       curl -X POST -H "Content-Type: application/json" \
-                        -d '${webhookMessage}' \
+                        -d '${message}' \
                         "$DISCORD_WEBHOOK"
                     """
                 }
