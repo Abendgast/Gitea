@@ -23,23 +23,15 @@ pipeline {
 
     stages {
         stage('Checkout') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 checkout scm
                 script {
-                    echo "Building from main branch"
                     env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
-                    echo "Commit: ${env.GIT_COMMIT}"
 
                     def changedFiles = sh(
                         script: '''
-                            if [ -n "$GIT_PREVIOUS_COMMIT" ]; then
-                                git diff --name-only $GIT_PREVIOUS_COMMIT $GIT_COMMIT | grep -E "\\.(go)$" || echo ""
-                            else
-                                git show --pretty="" --name-only HEAD | grep -E "\\.(go)$" || echo ""
-                            fi
+                            git show --pretty="" --name-only $GIT_COMMIT | grep -E '\\.go$' || echo ""
                         ''',
                         returnStdout: true
                     ).trim()
@@ -49,24 +41,6 @@ pipeline {
 
                     def hasGoFiles = changedFiles != ""
                     env.HAS_GO_CHANGES = hasGoFiles ? "true" : "false"
-                    echo "Has Go file changes: ${env.HAS_GO_CHANGES}"
-
-                    // Отримуємо унікальні директорії зі змінених файлів
-                    if (hasGoFiles) {
-                        def directories = sh(
-                            script: '''
-                                echo "$CHANGED_GO_FILES" | while read file; do
-                                    if [ -n "$file" ]; then
-                                        dirname "$file"
-                                    fi
-                                done | sort | uniq | tr '\n' ','
-                            ''',
-                            returnStdout: true
-                        ).trim().replaceAll(',$', '')
-
-                        env.CHANGED_DIRECTORIES = directories ?: '.'
-                        echo "Directories to analyze: ${env.CHANGED_DIRECTORIES}"
-                    }
                 }
             }
         }
@@ -80,45 +54,15 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "Setting up Java 17..."
-                    if [ -d "/usr/local/java17" ] && /usr/local/java17/bin/java -version 2>&1 | grep -q "17\\."; then
-                        echo "Java 17 already installed"
-                    else
-                        echo "Installing Java 17..."
-                        cd /tmp
-                        curl -L -o openjdk-17_linux-x64_bin.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
-                        mkdir -p /usr/local/java17
-                        tar --strip-components=1 -C /usr/local/java17 -xzf openjdk-17_linux-x64_bin.tar.gz
-                        rm -f openjdk-17_linux-x64_bin.tar.gz
-                    fi
-
-                    echo "Setting up Go 1.21.5..."
-                    if command -v go &> /dev/null; then
-                        CURRENT_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-                        if [ "$CURRENT_VERSION" != "1.21.5" ]; then
-                            rm -rf /usr/local/go || true
-                        fi
-                    fi
-
-                    if [ ! -d "/usr/local/go" ] || ! /usr/local/go/bin/go version 2>&1 | grep -q "go1.21.5"; then
-                        cd /tmp
-                        curl -L -o go1.21.5.linux-amd64.tar.gz https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-                        tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
-                        rm go1.21.5.linux-amd64.tar.gz
-                    fi
-
-                    /usr/local/go/bin/go version
-
-                    # Ініціалізуємо go.mod якщо потрібно
-                    if [ ! -f "go.mod" ]; then
-                        /usr/local/go/bin/go mod init code.gitea.io/gitea
-                    fi
-                    /usr/local/go/bin/go mod tidy || echo "Module tidy completed"
+                    echo "Setting up Go and Java..."
+                    # Java setup (simplified)
+                    mkdir -p /usr/local/java17 || true
+                    # Go setup (simplified)
+                    mkdir -p /usr/local/go || true
+                    echo "Java and Go folders prepared."
                 '''
             }
         }
-
-
 
         stage('SonarCloud Analysis') {
             when {
@@ -131,50 +75,24 @@ pipeline {
                 withSonarQubeEnv('SonarCloud') {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                         sh '''
-                            echo "Setting up SonarScanner..."
-                            export JAVA_HOME=/usr/local/java17
-                            export PATH=$JAVA_HOME/bin:$PATH
+                            echo "Running SonarCloud analysis only on changed Go files..."
 
-                            # Встановлюємо SonarScanner
-                            rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
+                            SONAR_INCLUSIONS=$(echo "$CHANGED_GO_FILES" | paste -sd "," -)
+                            echo "Files for analysis: $SONAR_INCLUSIONS"
 
-                            # Завантажуємо в /tmp але потім переміщуємо
-                            cd /tmp
-                            curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                            unzip -o sonar-scanner-cli.zip
-                            mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
-                            ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-                            chmod +x /usr/local/bin/sonar-scanner
-                            rm -f sonar-scanner-cli.zip
-
-                            # ВАЖЛИВО: Повертаємося в робочу директорію Jenkins
-                            cd $WORKSPACE
-                            echo "Current directory: $(pwd)"
-                            ls -la
-
-                            echo "Running SonarCloud analysis..."
-
-                            # Використовуємо директорії замість файлів для sources
-                            SONAR_SOURCES="${CHANGED_DIRECTORIES}"
-                            if [ -z "$SONAR_SOURCES" ] || [ "$SONAR_SOURCES" = "." ]; then
-                                SONAR_SOURCES="."
-                            fi
-
-                            echo "Analyzing directories: $SONAR_SOURCES"
-
-                            # Запускаємо SonarScanner з робочої директорії
-                            JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \\
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
-                                -Dsonar.organization=${SONAR_ORGANIZATION} \\
-                                -Dsonar.host.url=https://sonarcloud.io \\
-                                -Dsonar.token=${SONAR_TOKEN} \\
-                                -Dsonar.sources="$SONAR_SOURCES" \\
-                                -Dsonar.language=go \\
-                                -Dsonar.go.coverage.reportPaths=coverage.out \\
-                                -Dsonar.exclusions="**/*_test.go,**/vendor/**,**/*.pb.go" \\
-                                -Dsonar.scm.revision=${GIT_COMMIT} \\
-                                -Dsonar.branch.name=${BRANCH_NAME} \\
-                                -Dsonar.projectVersion=main-${BUILD_NUMBER} \\
+                            sonar-scanner \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.organization=${SONAR_ORGANIZATION} \
+                                -Dsonar.host.url=https://sonarcloud.io \
+                                -Dsonar.token=${SONAR_TOKEN} \
+                                -Dsonar.sources=. \
+                                -Dsonar.inclusions="$SONAR_INCLUSIONS" \
+                                -Dsonar.language=go \
+                                -Dsonar.go.coverage.reportPaths=coverage.out \
+                                -Dsonar.exclusions="**/*_test.go,**/vendor/**,**/*.pb.go" \
+                                -Dsonar.scm.revision=${GIT_COMMIT} \
+                                -Dsonar.branch.name=${BRANCH_NAME} \
+                                -Dsonar.projectVersion=main-${BUILD_NUMBER} \
                                 -Dsonar.verbose=true
                         '''
                     }
@@ -192,24 +110,9 @@ pipeline {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     script {
-                        try {
-                            echo "Waiting for SonarCloud Quality Gate..."
-                            sleep(30) // Даємо час SonarCloud обробити результати
-
-                            def qg = waitForQualityGate(abortPipeline: false)
-
-                            if (qg.status != 'OK') {
-                                echo "Quality Gate failed: ${qg.status}"
-                                echo "Check SonarCloud: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                                error("Quality Gate failed - stopping pipeline")
-                            } else {
-                                echo "Quality Gate passed!"
-                                echo "View report: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                            }
-                        } catch (Exception e) {
-                            echo "Quality Gate error: ${e.getMessage()}"
-                            echo "Check manually: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                            error("Quality Gate check failed - stopping pipeline")
+                        def qg = waitForQualityGate(abortPipeline: false)
+                        if (qg.status != 'OK') {
+                            error("Quality Gate failed: ${qg.status}")
                         }
                     }
                 }
@@ -271,79 +174,14 @@ pipeline {
                 }
             }
         }
-
-        stage('Generate Report') {
-            when {
-                allOf {
-                    branch 'main'
-                    environment name: 'HAS_GO_CHANGES', value: 'true'
-                }
-            }
-            steps {
-                script {
-                    def timestamp = new Date().format('yyyy-MM-dd HH:mm:ss')
-                    writeFile file: 'production-report.txt', text: """
-Production Release Report
-========================
-Project: ${env.SONAR_PROJECT_KEY}
-Branch: ${env.BRANCH_NAME}
-Commit: ${env.GIT_COMMIT}
-Build: ${env.BUILD_NUMBER}
-Timestamp: ${timestamp}
-
-Changed Files: ${env.CHANGED_GO_FILES}
-Analyzed Directories: ${env.CHANGED_DIRECTORIES}
-SonarCloud: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}
-
-Docker Images:
-- ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
-- ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}
-"""
-                    archiveArtifacts artifacts: 'production-report.txt', fingerprint: true
-                }
-            }
-        }
-
-        stage('Cleanup') {
-            when {
-                branch 'main'
-            }
-            steps {
-                sh '''
-                    docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
-                    docker rmi ${DOCKER_REGISTRY}:${IMAGE_TAG} || true
-                    docker rmi ${DOCKER_REGISTRY}:${LATEST_TAG} || true
-                    rm -f coverage.out || true
-                '''
-            }
-        }
     }
 
     post {
         success {
-            script {
-                if (env.BRANCH_NAME == 'main') {
-                    if (env.HAS_GO_CHANGES == 'true') {
-                        echo "SUCCESS: Pipeline completed"
-                        echo "Changed files: ${env.CHANGED_GO_FILES}"
-                        echo "SonarCloud: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                        if (env.IMAGE_TAG) {
-                            echo "Docker image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                        }
-                    } else {
-                        echo "No Go files changed - skipped analysis"
-                    }
-                }
-            }
+            echo "SUCCESS: Pipeline completed for changed Go files."
         }
-
         failure {
-            script {
-                echo "FAILURE: Pipeline failed"
-                if (env.HAS_GO_CHANGES == 'true') {
-                    echo "Check logs and SonarCloud: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                }
-            }
+            echo "FAILURE: Check SonarCloud for issues."
         }
     }
 }
