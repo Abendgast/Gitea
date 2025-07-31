@@ -1,0 +1,169 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'IMAGE_NAME',
+            defaultValue: 'gitea-app',
+            description: 'ECR repository name (e.g., gitea-app, my-service)'
+        )
+        string(
+            name: 'DEV_TAG',
+            defaultValue: '',
+            description: 'Dev tag to promote (e.g., dev-202507241208-8cd8dc96a)'
+        )
+        booleanParam(
+            name: 'CONFIRM_DEPLOY',
+            defaultValue: false,
+            description: 'Confirm deployment to production'
+        )
+    }
+
+    environment {
+        DOCKER_REGISTRY = '680833125636.dkr.ecr.us-east-1.amazonaws.com'
+        AWS_REGION = 'us-east-1'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 10, unit: 'MINUTES')
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.DEV_TAG) {
+                        error('DEV_TAG parameter is required')
+                    }
+                    if (!params.CONFIRM_DEPLOY) {
+                        error('CONFIRM_DEPLOY must be checked to proceed')
+                    }
+                    if (!params.DEV_TAG.startsWith('dev-')) {
+                        error('DEV_TAG must start with "dev-"')
+                    }
+
+                    def timestamp = sh(script: "date '+%Y%m%d%H%M%S'", returnStdout: true).trim()
+                    env.PROD_TAG = "prod-${timestamp}"
+
+                    env.SOURCE_IMAGE = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}:${params.DEV_TAG}"
+                    env.TARGET_IMAGE = "${env.DOCKER_REGISTRY}/${params.IMAGE_NAME}:${env.PROD_TAG}"
+
+                    echo "Repository: ${params.IMAGE_NAME}"
+                    echo "Dev tag: ${params.DEV_TAG}"
+                    echo "Prod tag: ${env.PROD_TAG}"
+                    echo "Source: ${env.SOURCE_IMAGE}"
+                    echo "Target: ${env.TARGET_IMAGE}"
+                }
+            }
+        }
+
+        stage('Verify Source Image') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    script {
+                        def imageExists = sh(
+                            script: """
+                                aws ecr describe-images \
+                                    --repository-name ${params.IMAGE_NAME} \
+                                    --image-ids imageTag=${params.DEV_TAG} \
+                                    --region ${env.AWS_REGION} \
+                                    --query 'imageDetails[0].imageTags' \
+                                    --output text 2>/dev/null || echo "NOT_FOUND"
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (imageExists == "NOT_FOUND") {
+                            error("Image ${params.DEV_TAG} not found in ECR repository ${params.IMAGE_NAME}")
+                        }
+                        echo "Source image verified: ${env.SOURCE_IMAGE}"
+                    }
+                }
+            }
+        }
+
+        stage('Pull Dev Image') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region $AWS_REGION | \
+                            docker login --username AWS --password-stdin $DOCKER_REGISTRY
+
+                        echo "Pulling dev image: $SOURCE_IMAGE"
+                        docker pull $SOURCE_IMAGE
+                    '''
+                }
+            }
+        }
+
+        stage('Create Prod Image (with unique metadata)') {
+            steps {
+                script {
+                    echo "Creating prod image with unique label to ensure different digest..."
+                    sh '''
+                        docker tag $SOURCE_IMAGE temp-prod-image:latest
+
+                        docker image inspect temp-prod-image:latest > /dev/null
+
+                        echo "Committing image with unique metadata..."
+                        docker container create --name temp_container temp-prod-image:latest > /dev/null
+                        TIMESTAMP=$(date +%s)
+                        docker commit \
+                            --change "LABEL build.ts=${TIMESTAMP}" \
+                            temp_container \
+                            $TARGET_IMAGE
+                        docker rm temp_container
+                        docker rmi temp-prod-image:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Push Production Image') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
+                    sh '''
+                        echo "Pushing production image: $TARGET_IMAGE"
+                        docker push $TARGET_IMAGE
+                    '''
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sh """
+                    docker rmi ${env.SOURCE_IMAGE} || true
+                    docker rmi ${env.TARGET_IMAGE} || true
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+=== PROMOTION SUCCESSFUL ===
+Repository: ${params.IMAGE_NAME}
+
+Dev image (unchanged): ${env.SOURCE_IMAGE}
+Prod image (NEW, with unique label): ${env.TARGET_IMAGE}
+"""
+        }
+        failure {
+            echo """
+=== PROMOTION FAILED ===
+Attempted promotion: ${params.IMAGE_NAME}:${params.DEV_TAG}
+"""
+        }
+        always {
+            sh """
+                docker rmi ${env.SOURCE_IMAGE} || true
+                docker rmi ${env.TARGET_IMAGE} || true
+            """
+        }
+    }
+}
