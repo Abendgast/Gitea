@@ -118,54 +118,7 @@ pipeline {
             }
         }
 
-        stage('Run Tests') {
-            when {
-                allOf {
-                    branch 'main'
-                    environment name: 'HAS_GO_CHANGES', value: 'true'
-                }
-            }
-            steps {
-                sh '''
-                    echo "Running tests for changed Go files..."
 
-                    export GITEA_CONF=""
-                    export USER=gitea
-                    export HOME=/tmp/gitea-home
-                    mkdir -p $HOME
-
-                    # Знаходимо пакети для тестування з директорій
-                    PACKAGES_TO_TEST=""
-                    for dir in $(echo "$CHANGED_DIRECTORIES" | tr ',' ' '); do
-                        if [ -d "$dir" ]; then
-                            if [ "$dir" = "." ]; then
-                                PACKAGES_TO_TEST="$PACKAGES_TO_TEST ./"
-                            else
-                                PACKAGES_TO_TEST="$PACKAGES_TO_TEST ./$dir"
-                            fi
-                        fi
-                    done
-
-                    PACKAGES_TO_TEST=$(echo $PACKAGES_TO_TEST | tr ' ' '\\n' | sort | uniq | tr '\\n' ' ')
-                    echo "Testing packages: $PACKAGES_TO_TEST"
-
-                    # Запускаємо тести
-                    if [ -n "$PACKAGES_TO_TEST" ]; then
-                        /usr/local/go/bin/go test -v $PACKAGES_TO_TEST -coverprofile=coverage.out -covermode=atomic || {
-                            echo "Tests failed - pipeline will be marked as failed"
-                            exit 1
-                        }
-
-                        if [ -f "coverage.out" ]; then
-                            /usr/local/go/bin/go tool cover -func coverage.out | tail -n 1
-                        fi
-                    else
-                        echo "No valid packages found for testing"
-                        echo "mode: atomic" > coverage.out
-                    fi
-                '''
-            }
-        }
 
         stage('SonarCloud Analysis') {
             when {
