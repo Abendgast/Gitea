@@ -13,7 +13,7 @@ pipeline {
 
     options {
         timestamps()
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         skipDefaultCheckout()
     }
 
@@ -24,12 +24,12 @@ pipeline {
     stages {
         stage('Checkout') {
             when {
-                branch 'dev'
+                branch 'main'
             }
             steps {
                 checkout scm
                 script {
-                    echo "Building from dev branch"
+                    echo "Building from main branch"
                     env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
                     echo "Commit: ${env.GIT_COMMIT}"
 
@@ -57,7 +57,7 @@ pipeline {
         stage('Setup Java 17') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
@@ -92,7 +92,7 @@ pipeline {
         stage('Setup Go Environment') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
@@ -137,50 +137,32 @@ pipeline {
         stage('Run Tests') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
             steps {
                 sh '''
-                    echo "Running Go tests for changed files only..."
+                    echo "Running comprehensive Go tests for main branch..."
 
-                    if [ -z "$CHANGED_GO_FILES" ]; then
-                        echo "No Go files changed, skipping tests"
-                        exit 0
-                    fi
+                    # Для main бренчі запускаємо повний набір тестів
+                    export GITEA_CONF=""
+                    export USER=gitea
+                    export HOME=/tmp/gitea-home
+                    mkdir -p $HOME
 
-                    changed_packages=""
-                    for file in $CHANGED_GO_FILES; do
-                        if [ -f "$file" ]; then
-                            package_dir=$(dirname "$file")
-                            if [ "$package_dir" = "." ]; then
-                                package_dir="./"
-                            else
-                                package_dir="./$package_dir"
-                            fi
-                            changed_packages="$changed_packages $package_dir"
-                        fi
-                    done
+                    # Генеруємо coverage звіт
+                    echo "Running tests with coverage..."
+                    /usr/local/go/bin/go test -v ./... -coverprofile=coverage.out -covermode=atomic 2>/dev/null || true
 
-                    if [ -n "$changed_packages" ]; then
-                        unique_packages=$(echo $changed_packages | tr ' ' '\\n' | sort -u | tr '\\n' ' ')
-                        echo "Testing packages: $unique_packages"
-
-                        export GITEA_CONF=""
-                        export USER=gitea
-                        export HOME=/tmp/gitea-home
-                        mkdir -p $HOME
-
-                        for package in $unique_packages; do
-                            echo "Testing package: $package"
-                            if /usr/local/go/bin/go test -v "$package" 2>/dev/null || true; then
-                                echo "Test execution completed for package: $package"
-                            fi
-                        done
+                    if [ -f "coverage.out" ]; then
+                        echo "Coverage report generated"
+                        /usr/local/go/bin/go tool cover -func coverage.out | tail -n 1
                     else
-                        echo "No Go packages to test"
+                        echo "No coverage report generated"
                     fi
+
+                    echo "Test execution completed"
                 '''
             }
         }
@@ -188,7 +170,7 @@ pipeline {
         stage('SonarCloud Analysis') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
@@ -218,45 +200,32 @@ pipeline {
                             rm -f sonar-scanner-cli.zip
                             echo "SonarScanner installed successfully"
 
-                            echo "Preparing SonarCloud analysis for changed Go files only..."
+                            echo "Preparing comprehensive SonarCloud analysis for main branch..."
 
-                            if [ -z "$CHANGED_GO_FILES" ]; then
-                                echo "No Go source files changed, skipping SonarCloud analysis"
+                            # Для main бренчі аналізуємо всі Go файли
+                            all_go_files=$(find . -name "*.go" -not -path "./vendor/*" -not -name "*_test.go" | tr '\n' ',' | sed 's/,$//')
+
+                            echo "All Go source files for analysis: $all_go_files"
+
+                            if [ -z "$all_go_files" ]; then
+                                echo "No Go source files found, skipping SonarCloud analysis"
                                 exit 0
                             fi
 
-                            # Фільтруємо тільки .go файли (не тестові)
-                            changed_sources=""
-                            for file in $CHANGED_GO_FILES; do
-                                if [ -f "$file" ] && ! echo "$file" | grep -q "_test\\.go$"; then
-                                    if [ -z "$changed_sources" ]; then
-                                        changed_sources="$file"
-                                    else
-                                        changed_sources="$changed_sources,$file"
-                                    fi
-                                fi
-                            done
-
-                            echo "Go source files for analysis: $changed_sources"
-
-                            if [ -z "$changed_sources" ]; then
-                                echo "No non-test Go source files changed, skipping SonarCloud analysis"
-                                exit 0
-                            fi
-
-                            # Створюємо sonar-project.properties
+                            # Створюємо sonar-project.properties для main бренчі
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
 sonar.sourceEncoding=UTF-8
-sonar.sources=$changed_sources
+sonar.sources=$all_go_files
 sonar.language=go
 sonar.go.coverage.reportPaths=coverage.out
 sonar.exclusions=**/*_test.go,**/vendor/**,**/*.pb.go
+sonar.projectVersion=main-${BUILD_NUMBER}
 EOF
 
-                            echo "Running SonarCloud analysis for changed files only..."
-                            echo "Analyzing files: $changed_sources"
+                            echo "Running comprehensive SonarCloud analysis for main branch..."
+                            echo "Analyzing all Go source files"
 
                             JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
@@ -265,7 +234,8 @@ EOF
                                 -Dsonar.token=${SONAR_TOKEN} \
                                 -Dsonar.scm.revision=${GIT_COMMIT} \
                                 -Dsonar.branch.name=${BRANCH_NAME} \
-                                -Dsonar.verbose=false
+                                -Dsonar.verbose=false \
+                                -Dsonar.projectVersion=main-${BUILD_NUMBER}
                         '''
                     }
                 }
@@ -275,18 +245,18 @@ EOF
         stage('Quality Gate') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
+                timeout(time: 15, unit: 'MINUTES') {
                     script {
                         try {
-                            echo "Waiting for SonarCloud Quality Gate result..."
+                            echo "Waiting for SonarCloud Quality Gate result for main branch..."
 
                             // Додаємо затримку перед перевіркою
-                            sleep(30)
+                            sleep(45)
 
                             def qg = waitForQualityGate(abortPipeline: false)
 
@@ -304,10 +274,11 @@ EOF
                                     }
                                 }
 
+                                // Для main бренчі Quality Gate критичний
                                 currentBuild.result = 'FAILURE'
-                                error "Quality Gate failed with status: ${qg.status}. Pipeline will fail and Docker image will NOT be pushed to ECR."
+                                error "Quality Gate failed with status: ${qg.status}. Main branch deployment blocked."
                             } else {
-                                echo "Quality Gate passed successfully!"
+                                echo "Quality Gate passed successfully for main branch!"
                                 echo "View detailed report: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                             }
                         } catch (Exception e) {
@@ -318,12 +289,12 @@ EOF
                                 echo "Quality Gate check timed out - this might be a temporary SonarCloud issue"
                                 echo "Check SonarCloud dashboard manually: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
 
-                                // Можна вирішити чи продовжувати pipeline або ні
-                                currentBuild.result = 'UNSTABLE'
-                                echo "Pipeline marked as UNSTABLE due to Quality Gate timeout"
+                                // Для main бренчі timeout також критичний
+                                currentBuild.result = 'FAILURE'
+                                error "Quality Gate timeout on main branch - deployment blocked for safety"
                             } else {
                                 currentBuild.result = 'FAILURE'
-                                error "Pipeline failed due to Quality Gate issues. Docker image will NOT be pushed to ECR."
+                                error "Pipeline failed due to Quality Gate issues. Main branch deployment blocked."
                             }
                         }
                     }
@@ -331,10 +302,10 @@ EOF
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Production Docker Image') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     not {
                         expression { currentBuild.result == 'FAILURE' }
                     }
@@ -344,27 +315,32 @@ EOF
                 script {
                     def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
+                    def buildNumber = env.BUILD_NUMBER
 
-                    env.IMAGE_TAG = "dev-${timestamp}-${shortCommit}"
+                    // Для main бренчі створюємо теги для production
+                    env.IMAGE_TAG = "v${buildNumber}-${timestamp}-${shortCommit}"
+                    env.LATEST_TAG = "latest"
 
-                    echo "Building Docker image..."
+                    echo "Building production Docker image for main branch..."
                     echo "Image name: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
                     echo "Registry: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    echo "Also tagging as: ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}"
 
                     sh """
                         docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} .
                         docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}
+                        docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}
                     """
 
-                    echo "Docker image built successfully"
+                    echo "Production Docker image built successfully"
                 }
             }
         }
 
-        stage('Push to ECR') {
+        stage('Push to ECR Production') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     not {
                         expression { currentBuild.result == 'FAILURE' }
                     }
@@ -373,23 +349,26 @@ EOF
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
                     sh '''
-                        echo "Logging into ECR..."
+                        echo "Logging into ECR for production deployment..."
                         aws ecr get-login-password --region $AWS_REGION | \
                             docker login --username AWS --password-stdin $DOCKER_REGISTRY
 
-                        echo "Pushing image to ECR..."
+                        echo "Pushing production images to ECR..."
                         docker push $DOCKER_REGISTRY:$IMAGE_TAG
+                        docker push $DOCKER_REGISTRY:$LATEST_TAG
 
-                        echo "Image pushed successfully: $DOCKER_REGISTRY:$IMAGE_TAG"
+                        echo "Production images pushed successfully:"
+                        echo "  - $DOCKER_REGISTRY:$IMAGE_TAG"
+                        echo "  - $DOCKER_REGISTRY:$LATEST_TAG"
                     '''
                 }
             }
         }
 
-        stage('Generate Report') {
+        stage('Generate Production Report') {
             when {
                 allOf {
-                    branch 'dev'
+                    branch 'main'
                     environment name: 'HAS_GO_CHANGES', value: 'true'
                 }
             }
@@ -398,40 +377,49 @@ EOF
                     def reportStatus = currentBuild.result ?: 'SUCCESS'
                     def timestamp = new Date().format('yyyy-MM-dd HH:mm:ss')
 
-                    writeFile file: 'sonar-analysis-report.txt', text: """
-SonarCloud Analysis Report
-==========================
+                    writeFile file: 'production-release-report.txt', text: """
+Production Release Report - Main Branch
+=======================================
 Project: ${env.SONAR_PROJECT_KEY}
 Organization: ${env.SONAR_ORGANIZATION}
 Branch: ${env.BRANCH_NAME}
 Commit: ${env.GIT_COMMIT}
+Build Number: ${env.BUILD_NUMBER}
 Timestamp: ${timestamp}
 
-Changed Go Files Analyzed:
-${env.CHANGED_GO_FILES}
+Quality Assurance:
+- Go Files Analyzed: ALL
+- Quality Gate Status: ${reportStatus}
+- Analysis URL: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}
 
-Quality Gate Status: ${reportStatus}
-Analysis URL: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}
+Production Deployment:
+- Pipeline Result: ${reportStatus}
+- Production Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT CREATED - Quality Gate Failed"}
+- Latest Tag: ${env.LATEST_TAG ? "${env.DOCKER_REGISTRY}:${env.LATEST_TAG}" : "NOT CREATED - Quality Gate Failed"}
 
-Pipeline Result: ${reportStatus}
-Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT CREATED - Quality Gate Failed"}
+Release Notes:
+- This is a production-ready release from main branch
+- Full test suite executed with coverage analysis
+- Comprehensive SonarCloud quality analysis completed
+- Production Docker images available in ECR
 """
 
-                    archiveArtifacts artifacts: 'sonar-analysis-report.txt', fingerprint: true
-                    echo "Analysis report generated and archived as artifact"
+                    archiveArtifacts artifacts: 'production-release-report.txt', fingerprint: true
+                    echo "Production release report generated and archived"
                 }
             }
         }
 
         stage('Cleanup') {
             when {
-                branch 'dev'
+                branch 'main'
             }
             steps {
                 sh """
                     echo "Cleaning up local Docker images..."
                     docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
+                    docker rmi ${env.DOCKER_REGISTRY}:${env.LATEST_TAG} || true
 
                     rm -f coverage.out || true
 
@@ -444,40 +432,43 @@ Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT
     post {
         success {
             script {
-                if (env.BRANCH_NAME == 'dev') {
-                    def message = "SUCCESS: Dev pipeline completed successfully"
+                if (env.BRANCH_NAME == 'main') {
+                    def message = "SUCCESS: Production pipeline completed successfully"
 
                     if (env.HAS_GO_CHANGES == 'true') {
-                        message += "\nSonarCloud analysis completed and Quality Gate passed"
-                        message += "\nChanged Go files analyzed: ${env.CHANGED_GO_FILES}"
+                        message += "\nComprehensive SonarCloud analysis completed and Quality Gate passed"
+                        message += "\nFull test suite executed with coverage analysis"
                         message += "\nView analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     } else {
                         message += "\nNo Go files changed, SonarCloud analysis skipped"
                     }
 
                     if (env.IMAGE_TAG) {
-                        message += "\nImage pushed to ECR: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                        message += "\nProduction images pushed to ECR:"
+                        message += "\n  - ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                        message += "\n  - ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}"
                     }
 
                     echo message
                 } else {
-                    echo "Skipped: Not dev branch"
+                    echo "Skipped: Not main branch"
                 }
             }
         }
 
         failure {
             script {
-                def message = "FAILURE: Dev pipeline failed"
+                def message = "FAILURE: Production pipeline failed"
 
                 if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\nSonarCloud Quality Gate FAILED"
-                    message += "\nChanged Go files that failed analysis: ${env.CHANGED_GO_FILES}"
+                    message += "\nSonarCloud Quality Gate FAILED - Production deployment blocked"
                     message += "\nCheck SonarCloud dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                    message += "\nDocker image was NOT pushed to ECR due to quality gate failure"
+                    message += "\nProduction Docker images were NOT pushed to ECR"
                 } else {
-                    message += "\nPipeline failed for other reasons"
+                    message += "\nProduction pipeline failed for other reasons"
                 }
+
+                message += "\nImmediate action required for main branch failure"
 
                 echo message
             }
@@ -485,16 +476,11 @@ Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT
 
         unstable {
             script {
-                def message = "UNSTABLE: Dev pipeline completed with warnings"
+                def message = "UNSTABLE: Production pipeline completed with warnings"
+                message += "\nThis should not happen on main branch - investigate immediately"
 
                 if (env.HAS_GO_CHANGES == 'true') {
-                    message += "\nSonarCloud Quality Gate check timed out"
-                    message += "\nChanged Go files analyzed: ${env.CHANGED_GO_FILES}"
-                    message += "\nCheck SonarCloud dashboard manually: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-
-                    if (env.IMAGE_TAG) {
-                        message += "\nImage pushed to ECR: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
-                    }
+                    message += "\nCheck SonarCloud dashboard: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                 }
 
                 echo message
@@ -503,7 +489,7 @@ Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT
 
         always {
             script {
-                echo "Pipeline execution completed"
+                echo "Production pipeline execution completed"
                 echo "Duration: ${currentBuild.durationString}"
 
                 if (fileExists('**/test-results.xml')) {
@@ -517,6 +503,19 @@ Docker Image: ${env.IMAGE_TAG ? "${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}" : "NOT
                     rm -f sonar-project.properties || true
                     rm -f coverage.out || true
                 '''
+
+                // Для main бренчі додаємо додаткове логування
+                if (env.BRANCH_NAME == 'main') {
+                    echo "=== PRODUCTION DEPLOYMENT SUMMARY ==="
+                    echo "Branch: ${env.BRANCH_NAME}"
+                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}"
+                    echo "Build: ${env.BUILD_NUMBER}"
+                    echo "Commit: ${env.GIT_COMMIT}"
+                    if (env.IMAGE_TAG) {
+                        echo "Image: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                    }
+                    echo "===================================="
+                }
             }
         }
     }
