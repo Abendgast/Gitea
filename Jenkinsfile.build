@@ -178,11 +178,30 @@ pipeline {
     }
 
     post {
-        success {
-            echo "SUCCESS: Pipeline completed for changed Go files."
-        }
-        failure {
-            echo "FAILURE: Check SonarCloud for issues."
+        always {
+            script {
+                def status = currentBuild.currentResult
+                def color = (status == 'SUCCESS') ? 3066993 : 15158332  // зелений або червоний
+                def shortCommit = env.GIT_COMMIT?.take(7) ?: 'unknown'
+                def webhookMessage = """
+                {
+                  "embeds": [{
+                    "title": "Jenkins Pipeline Notification",
+                    "description": "**Status:** ${status}\\n**Branch:** ${env.BRANCH_NAME}\\n**Commit:** ${shortCommit}\\n**Build URL:** [View Build](${env.BUILD_URL})",
+                    "color": ${color}
+                  }]
+                }
+                """
+
+                withCredentials([string(credentialsId: 'discord-webhook-url', variable: 'DISCORD_WEBHOOK')]) {
+                    sh """
+                      curl -X POST -H "Content-Type: application/json" \
+                        -d '${webhookMessage}' \
+                        "$DISCORD_WEBHOOK"
+                    """
+                }
+            }
         }
     }
+
 }
