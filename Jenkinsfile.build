@@ -131,11 +131,11 @@ pipeline {
             steps {
                 script {
                     def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
+                    def timestamp = sh(script: "date '+%Y-%m-%d_%H%M'", returnStdout: true).trim()
                     def buildNumber = env.BUILD_NUMBER
 
-                    env.IMAGE_TAG = "v${buildNumber}-${timestamp}-${shortCommit}"
-                    env.LATEST_TAG = "latest"
+                    env.IMAGE_TAG = "dev-${timestamp}-${shortCommit}"
+                    env.LATEST_TAG = "dev-latest"
 
                     echo "Building Docker image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
 
@@ -145,6 +145,7 @@ pipeline {
                         docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY}:${env.LATEST_TAG}
                     """
                 }
+
             }
         }
 
