@@ -100,7 +100,6 @@ pipeline {
                 sh '''
                     echo "Setting up Go environment..."
 
-                    # Видаляємо старі версії Go якщо потрібно
                     if command -v go &> /dev/null; then
                         CURRENT_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
                         if [ "$CURRENT_VERSION" != "1.21.5" ]; then
@@ -145,13 +144,11 @@ pipeline {
                 sh '''
                     echo "Running comprehensive Go tests for main branch..."
 
-                    # Для main бренчі запускаємо повний набір тестів
                     export GITEA_CONF=""
                     export USER=gitea
                     export HOME=/tmp/gitea-home
                     mkdir -p $HOME
 
-                    # Генеруємо coverage звіт
                     echo "Running tests with coverage..."
                     /usr/local/go/bin/go test -v ./... -coverprofile=coverage.out -covermode=atomic 2>/dev/null || true
 
@@ -186,7 +183,6 @@ pipeline {
                             echo "Using Java version:"
                             java -version
 
-                            # Очищуємо попередні установки
                             rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
                             rm -rf /tmp/sonar-scanner* || true
 
@@ -202,7 +198,6 @@ pipeline {
 
                             echo "Preparing comprehensive SonarCloud analysis for main branch..."
 
-                            # Для main бренчі аналізуємо всі Go файли
                             all_go_files=$(find . -name "*.go" -not -path "./vendor/*" -not -name "*_test.go" | tr '\n' ',' | sed 's/,$//')
 
                             echo "All Go source files for analysis: $all_go_files"
@@ -212,7 +207,6 @@ pipeline {
                                 exit 0
                             fi
 
-                            # Створюємо sonar-project.properties для main бренчі
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
@@ -255,7 +249,6 @@ EOF
                         try {
                             echo "Waiting for SonarCloud Quality Gate result for main branch..."
 
-                            // Додаємо затримку перед перевіркою
                             sleep(45)
 
                             def qg = waitForQualityGate(abortPipeline: false)
@@ -264,7 +257,6 @@ EOF
                                 echo "Quality Gate failed: ${qg.status}"
                                 echo "Check SonarCloud dashboard for details: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
 
-                                // Додаємо детальну інформацію про помилки
                                 if (qg.conditions) {
                                     echo "Failed conditions:"
                                     qg.conditions.each { condition ->
@@ -274,7 +266,6 @@ EOF
                                     }
                                 }
 
-                                // Для main бренчі Quality Gate критичний
                                 currentBuild.result = 'FAILURE'
                                 error "Quality Gate failed with status: ${qg.status}. Main branch deployment blocked."
                             } else {
@@ -284,12 +275,10 @@ EOF
                         } catch (Exception e) {
                             echo "Quality Gate check failed: ${e.getMessage()}"
 
-                            // Перевіряємо чи це timeout
                             if (e.getMessage().contains('timeout') || e.getMessage().contains('Timeout')) {
                                 echo "Quality Gate check timed out - this might be a temporary SonarCloud issue"
                                 echo "Check SonarCloud dashboard manually: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
 
-                                // Для main бренчі timeout також критичний
                                 currentBuild.result = 'FAILURE'
                                 error "Quality Gate timeout on main branch - deployment blocked for safety"
                             } else {
@@ -317,7 +306,6 @@ EOF
                     def timestamp = sh(script: "date '+%Y%m%d%H%M'", returnStdout: true).trim()
                     def buildNumber = env.BUILD_NUMBER
 
-                    // Для main бренчі створюємо теги для production
                     env.IMAGE_TAG = "v${buildNumber}-${timestamp}-${shortCommit}"
                     env.LATEST_TAG = "latest"
 
@@ -504,7 +492,6 @@ Release Notes:
                     rm -f coverage.out || true
                 '''
 
-                // Для main бренчі додаємо додаткове логування
                 if (env.BRANCH_NAME == 'main') {
                     echo "=== PRODUCTION DEPLOYMENT SUMMARY ==="
                     echo "Branch: ${env.BRANCH_NAME}"
