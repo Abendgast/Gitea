@@ -8,7 +8,6 @@ pipeline {
         SONAR_PROJECT_KEY = 'Abendgast_Gitea'
         SONAR_ORGANIZATION = 'abendgast'
         PATH = "/usr/local/go/bin:${env.PATH}"
-        // Додаємо Java 17 до PATH
         JAVA_HOME = '/usr/local/java17'
     }
 
@@ -66,30 +65,24 @@ pipeline {
                 sh '''
                     echo "Setting up Java 17 for SonarCloud..."
 
-                    # Перевіряємо чи вже встановлена Java 17
                     if [ -d "/usr/local/java17" ] && /usr/local/java17/bin/java -version 2>&1 | grep -q "17\\."; then
                         echo "Java 17 already installed"
                     else
                         echo "Installing Java 17..."
                         cd /tmp
 
-                        # Завантажуємо та встановлюємо OpenJDK 17
                         curl -L -o openjdk-17_linux-x64_bin.tar.gz https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz
 
-                        # Створюємо директорію та розпаковуємо
                         mkdir -p /usr/local/java17
                         tar --strip-components=1 -C /usr/local/java17 -xzf openjdk-17_linux-x64_bin.tar.gz
 
-                        # Очищуємо
                         rm -f openjdk-17_linux-x64_bin.tar.gz
 
                         echo "Java 17 installed successfully"
                     fi
 
-                    # Перевіряємо версію
                     /usr/local/java17/bin/java -version
 
-                    # Експортуємо JAVA_HOME для поточної сесії
                     export JAVA_HOME=/usr/local/java17
                     export PATH=$JAVA_HOME/bin:$PATH
                 '''
@@ -188,101 +181,81 @@ pipeline {
                 }
             }
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        echo "Setting up SonarScanner with Java 17..."
+                withSonarQubeEnv('SonarCloud') {
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        sh '''
+                            echo "Setting up SonarScanner with Java 17..."
 
-                        # Встановлюємо JAVA_HOME і PATH для Java 17
-                        export JAVA_HOME=/usr/local/java17
-                        export PATH=$JAVA_HOME/bin:$PATH
+                            export JAVA_HOME=/usr/local/java17
+                            export PATH=$JAVA_HOME/bin:$PATH
 
-                        # Перевіряємо версію Java
-                        echo "Using Java version:"
-                        java -version
+                            echo "Using Java version:"
+                            java -version
 
-                        # Видаляємо старі версії SonarScanner
-                        rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
-                        rm -rf /tmp/sonar-scanner* || true
+                            rm -rf /usr/local/sonar-scanner /usr/local/bin/sonar-scanner || true
+                            rm -rf /tmp/sonar-scanner* || true
 
-                        echo "Installing latest SonarScanner compatible with Java 17..."
-                        (
-                            cd /tmp
-                            # Використовуємо найновішу версію SonarScanner (5.x)
-                            curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                            unzip -o sonar-scanner-cli.zip
-                            mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
-                            ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-                            chmod +x /usr/local/bin/sonar-scanner
-                            rm -f sonar-scanner-cli.zip
-                        )
-                        echo "SonarScanner installed successfully"
+                            echo "Installing latest SonarScanner compatible with Java 17..."
+                            (
+                                cd /tmp
+                                curl -L -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                                unzip -o sonar-scanner-cli.zip
+                                mv sonar-scanner-5.0.1.3006-linux /usr/local/sonar-scanner
+                                ln -sf /usr/local/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                                chmod +x /usr/local/bin/sonar-scanner
+                                rm -f sonar-scanner-cli.zip
+                            )
+                            echo "SonarScanner installed successfully"
 
-                        echo "Preparing SonarCloud analysis for changed files only..."
+                            echo "Preparing SonarCloud analysis..."
 
-                        # Створюємо список змінених файлів для SonarCloud
-                        changed_sources=""
-                        changed_tests=""
+                            changed_sources=""
+                            changed_tests=""
 
-                        for file in $CHANGED_FILES; do
-                            if echo "$file" | grep -E "\\.(go|js|ts|java|py|php|cs|cpp|c|h)$" > /dev/null; then
-                                if echo "$file" | grep "_test\\." > /dev/null; then
-                                    if [ -z "$changed_tests" ]; then
-                                        changed_tests="$file"
+                            for file in $CHANGED_FILES; do
+                                if echo "$file" | grep -E "\\.(go|js|ts|java|py|php|cs|cpp|c|h)$" > /dev/null; then
+                                    if echo "$file" | grep "_test\\." > /dev/null; then
+                                        if [ -z "$changed_tests" ]; then
+                                            changed_tests="$file"
+                                        else
+                                            changed_tests="$changed_tests,$file"
+                                        fi
                                     else
-                                        changed_tests="$changed_tests,$file"
-                                    fi
-                                else
-                                    if [ -z "$changed_sources" ]; then
-                                        changed_sources="$file"
-                                    else
-                                        changed_sources="$changed_sources,$file"
+                                        if [ -z "$changed_sources" ]; then
+                                            changed_sources="$file"
+                                        else
+                                            changed_sources="$changed_sources,$file"
+                                        fi
                                     fi
                                 fi
-                            fi
-                        done
+                            done
 
-                        echo "Changed source files: $changed_sources"
-                        echo "Changed test files: $changed_tests"
+                            echo "Changed source files: $changed_sources"
+                            echo "Changed test files: $changed_tests"
 
-                        if [ ! -f "sonar-project.properties" ]; then
-                            echo "Creating sonar-project.properties for changed files..."
                             cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.organization=${SONAR_ORGANIZATION}
 sonar.sourceEncoding=UTF-8
+sonar.sources=.
+sonar.exclusions=**/vendor/**,**/*_test.go,**/node_modules/**
+sonar.tests=.
+sonar.test.inclusions=**/*_test.go
+sonar.go.coverage.reportPaths=coverage.out
 EOF
 
-                            # Додаємо тільки змінені файли до аналізу
-                            if [ -n "$changed_sources" ]; then
-                                echo "sonar.sources=$changed_sources" >> sonar-project.properties
-                            else
-                                echo "sonar.sources=." >> sonar-project.properties
-                                echo "sonar.exclusions=**/*" >> sonar-project.properties
-                            fi
+                            echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
+                            echo "Using Java: $JAVA_HOME"
 
-                            if [ -n "$changed_tests" ]; then
-                                echo "sonar.tests=$changed_tests" >> sonar-project.properties
-                            fi
-
-                            echo "sonar.go.coverage.reportPaths=coverage.out" >> sonar-project.properties
-                        fi
-
-                        echo "Running SonarCloud analysis for branch: ${BRANCH_NAME}"
-                        echo "Using Java: $JAVA_HOME"
-                        echo "Token length: ${#SONAR_TOKEN}"
-
-                        # Запускаємо SonarScanner з правильним JAVA_HOME
-                        JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
-                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                            -Dsonar.organization=${SONAR_ORGANIZATION} \
-                            -Dsonar.host.url=https://sonarcloud.io \
-                            -Dsonar.token=${SONAR_TOKEN} \
-                            -Dsonar.scm.revision=${GIT_COMMIT} \
-                            -Dsonar.branch.name=${BRANCH_NAME} \
-                            -Dsonar.go.coverage.reportPaths=coverage.out \
-                            -Dsonar.java.binaries=. \
-                            -Dsonar.analysis.mode=publish || echo "SonarCloud analysis completed with warnings"
-                    '''
+                            JAVA_HOME=/usr/local/java17 PATH=/usr/local/java17/bin:$PATH /usr/local/bin/sonar-scanner \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.organization=${SONAR_ORGANIZATION} \
+                                -Dsonar.host.url=https://sonarcloud.io \
+                                -Dsonar.token=${SONAR_TOKEN} \
+                                -Dsonar.scm.revision=${GIT_COMMIT} \
+                                -Dsonar.branch.name=${BRANCH_NAME}
+                        '''
+                    }
                 }
             }
         }
@@ -304,14 +277,13 @@ EOF
                             if (qg.status != 'OK') {
                                 echo "Quality Gate failed: ${qg.status}"
                                 echo "Check SonarCloud dashboard for details: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
-                                currentBuild.result = 'UNSTABLE'
+                                error "Quality Gate failed with status: ${qg.status}"
                             } else {
                                 echo "Quality Gate passed successfully!"
                             }
                         } catch (Exception e) {
                             echo "Quality Gate check failed: ${e.getMessage()}"
-                            echo "Continuing with build..."
-                            currentBuild.result = 'UNSTABLE'
+                            error "Pipeline failed due to Quality Gate issues"
                         }
                     }
                 }
@@ -320,7 +292,13 @@ EOF
 
         stage('Build Docker Image') {
             when {
-                branch 'dev'
+                allOf {
+                    branch 'dev'
+                    anyOf {
+                        environment name: 'HAS_GO_CHANGES', value: 'false'
+                        expression { currentBuild.result != 'FAILURE' }
+                    }
+                }
             }
             steps {
                 script {
@@ -345,7 +323,13 @@ EOF
 
         stage('Push to ECR') {
             when {
-                branch 'dev'
+                allOf {
+                    branch 'dev'
+                    anyOf {
+                        environment name: 'HAS_GO_CHANGES', value: 'false'
+                        expression { currentBuild.result != 'FAILURE' }
+                    }
+                }
             }
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${env.AWS_REGION}") {
@@ -374,6 +358,7 @@ EOF
                     docker rmi ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG} || true
 
                     rm -f coverage.out || true
+                    rm -f sonar-project.properties || true
 
                     echo "Cleanup completed"
                 """
@@ -389,7 +374,7 @@ EOF
                     message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
 
                     if (env.HAS_GO_CHANGES == 'true') {
-                        message += "\nSonarCloud analysis completed"
+                        message += "\nSonarCloud analysis completed and Quality Gate passed"
                         message += "\nView analysis: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     } else {
                         message += "\nNo Go files changed, SonarCloud analysis skipped"
@@ -409,6 +394,7 @@ EOF
                 if (env.HAS_GO_CHANGES == 'true') {
                     message += "\nCheck SonarCloud quality gate: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                     message += "\nReview test results and code quality issues"
+                    message += "\nDocker image was NOT pushed to ECR due to quality gate failure"
                 }
 
                 echo message
@@ -418,7 +404,9 @@ EOF
         unstable {
             script {
                 def message = "UNSTABLE: Dev pipeline completed with warnings"
-                message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                if (env.IMAGE_TAG) {
+                    message += "\nImage: ${env.DOCKER_REGISTRY}:${env.IMAGE_TAG}"
+                }
                 message += "\nCheck SonarCloud for quality gate issues: https://sonarcloud.io/project/overview?id=${env.SONAR_PROJECT_KEY}"
                 echo message
             }
