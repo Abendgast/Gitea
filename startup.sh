@@ -176,8 +176,9 @@ ENABLED = true
 ADAPTER = memory
 
 [queue]
-TYPE = level
-DATADIR = /data/gitea/queues
+TYPE = channel
+CONN_STR = "redis://localhost:6379/0"
+LENGTH = 1000
 CONFIG
 
     chown "$GITEA_USER:$GITEA_USER" "$GITEA_CONFIG"
