@@ -156,6 +156,7 @@ ENABLED = true
 TOKEN = gitea_metrics_token_2024
 ENABLED_ISSUE_BY_LABEL = true
 ENABLED_ISSUE_BY_REPOSITORY = true
+METRICS_AUTHENTICATION = false
 
 [log]
 MODE = console
